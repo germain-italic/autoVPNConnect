@@ -244,10 +244,10 @@ namespace AutoVPNConnect {
     }
 
     private string ConnectToVpn() {
-      // Clear it up front: claiming the slot fires UpdateUI before this method returns, and a
-      // stale error showing during a fresh attempt is worse than no error at all.
-      LastError = null;
       if (!TryBeginBusy()) return BusyResult;
+      // Only once the slot is ours: clearing it before would wipe the error belonging to the
+      // attempt that is already running. The UI hides it meanwhile, since we now count as busy.
+      LastError = null;
       try {
         var vpnName = mSettingsManager.VpnConnectionName;
         var userName = mSettingsManager.UserName;
