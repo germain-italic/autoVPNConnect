@@ -240,7 +240,11 @@ namespace AutoVPNConnect {
         message => InvokeRequired
           ? (bool)Invoke(new Func<bool>(() => MessageBox.Show(this, message, Updater.ApplicationName, MessageBoxButtons.OKCancel, MessageBoxIcon.Question) == DialogResult.OK))
           : MessageBox.Show(this, message, Updater.ApplicationName, MessageBoxButtons.OKCancel, MessageBoxIcon.Question) == DialogResult.OK,
-        () => toolStripMenuItemExit_Click(null, EventArgs.Empty)
+        () => toolStripMenuItemExit_Click(null, EventArgs.Empty),
+        // autoUpdate defaults to true: 10 s after start, then daily, the library downloads the
+        // latest release, swaps the executable and restarts, without asking or verifying it.
+        // Off, the same timer offers the update instead.
+        autoUpdate: false
       );
       
       InitializeTheme();

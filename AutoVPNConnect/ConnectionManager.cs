@@ -365,8 +365,8 @@ namespace AutoVPNConnect {
             return GetRasError(ret);
         }
         if (hasPassword && !string.IsNullOrEmpty(dialParams.szUserName)) {
-          mSettingsManager.UserName = dialParams.szUserName;
-          mSettingsManager.Password = dialParams.szPassword;
+          // Credentials read from Windows are used for this dial only. They used to be copied
+          // into the app's settings, moving a password out of Windows' own protected store.
           // RasDial hands back a usable handle even when it fails, and that half-open session
           // is itself a reason the port stays busy. Adopting it here is what lets the cheap
           // remedy below work on the very first dial after the application starts.
@@ -398,26 +398,17 @@ namespace AutoVPNConnect {
           return null;
         }
         else {
-          ProcessStartInfo procStartInfo;
-          if (!string.IsNullOrEmpty(userName) && !string.IsNullOrEmpty(password)) {
-            var rasdialCommand = " " + '\"' + vpnName + '\"';
-            rasdialCommand += " " + userName;
-            rasdialCommand += " " + password;
-            procStartInfo = new ProcessStartInfo("rasdial.exe", rasdialCommand);
-          }
-          else {
-            var rasphoneCommand = " -d " + '\"' + vpnName + '\"';
-            procStartInfo = new ProcessStartInfo("rasphone", rasphoneCommand);
-          }
-
-          procStartInfo.RedirectStandardOutput = true;
-          procStartInfo.UseShellExecute = false;
-          procStartInfo.CreateNoWindow = true;
-          procStartInfo.WindowStyle = ProcessWindowStyle.Hidden;
-          // This branch is only reached without usable stored credentials, which means the
-          // rasdial arm above it is unreachable and rasphone always wins. rasphone merely
-          // launches the connection dialog and returns, so its exit code is not a RAS error
-          // and the 633 recovery has no meaning here - it lives in the RasDial branch.
+          // Only reached without usable stored credentials, so the connection dialog is the
+          // one option left. An unreachable rasdial arm that passed the password on the
+          // command line, readable by any other process, was removed.
+          var procStartInfo = new ProcessStartInfo("rasphone", " -d " + '"' + vpnName + '"') {
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden
+          };
+          // rasphone merely launches the connection dialog and returns, so its exit code is not
+          // a RAS error and the 633 recovery has no meaning here - it lives in the RasDial branch.
           var exitCode = RunDialProcess(procStartInfo);
           return exitCode == 0 ? null : $"Error {exitCode}";
         }

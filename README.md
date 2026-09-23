@@ -79,16 +79,40 @@ fork are therefore not offered upstream.
 
 ## What this fork changes
 
- - **Runs again.** Both packages are pinned to 1.0.9500, the last version with real method
-   bodies, and `Costura.Fody` is upgraded to 5.7.0. The OS compatibility check, absent from
-   1.0.9500, is dropped.
- - **TLS validation restored.** The updater in `SergiyE.Common` installs a process-wide
-   certificate callback that accepts any certificate, then downloads and runs a replacement
-   executable. The callback is removed at startup.
+ - **Runs again.** Both packages are pinned to 1.0.9500, a version with real method bodies,
+   and `Costura.Fody` is upgraded to 5.7.0. The OS compatibility check, absent from 1.0.9500,
+   is dropped.
  - **RAS error 633 recovery**, described below.
- - **Settings fields load once**, so a network change no longer duplicates the VPN entry or
-   overwrites a user name being typed.
- - **Links, update check and About box** point to this fork.
+ - **Links, update check and About box** point to this fork. The About box links to it.
+
+### Bugs fixed from the original
+
+Security:
+
+ - **The VPN password was effectively stored in clear.** It was 3DES-encrypted with a key
+   written in the public source code. It is now protected with Windows DPAPI, tied to the
+   user account; a password saved by an earlier version is converted on first read.
+ - **Windows' saved VPN credentials were copied into the app's settings**, under that same
+   weak encryption, whenever the app had none of its own. They are now used for the dial
+   only.
+ - **Updates installed themselves.** Ten seconds after start, then daily, the updater
+   downloaded the latest release, replaced the executable and restarted it, without asking.
+   It now offers the update.
+ - **Any TLS certificate was accepted.** The updater installed a process-wide callback that
+   accepted every certificate, then downloaded and ran a replacement executable. The callback
+   is removed at startup.
+ - **The autostart entry was written unquoted.** With spaces in the path, Windows can run
+   another executable first. It is now quoted; existing entries are still recognised.
+
+Behaviour:
+
+ - **A manual disconnect redialled at once.** Hanging up changes the network addresses, and
+   with the restore option ticked, that change dialled straight back. Now a manual
+   disconnect, *Force disconnect* in the tray, holds until the VPN is connected again.
+ - **Ticking the restore option dialled.** *Restore lost connection*, formerly *Restore
+   connection*, is now a setting only. The app still connects at startup when it is ticked.
+ - **Status updates rewrote the settings fields**, so a network change duplicated the VPN
+   entry or overwrote a user name being typed. The fields now load once.
 
 ### Fix stuck VPN port (RAS error 633)
 

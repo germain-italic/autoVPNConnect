@@ -8,7 +8,12 @@ using Microsoft.Win32;
 namespace AutoVPNConnect {
   class SettingsManager {
     private readonly PersistentSettings settings;
-    private static readonly string encryptionKey = "123456789012345678901234";
+
+    // Passwords used to be 3DES-encrypted with this key, hardcoded in public source: anyone
+    // could decrypt them. Kept only to read such a value once and store it again with DPAPI.
+    private static readonly string legacyEncryptionKey = "123456789012345678901234";
+    private const string ProtectedPrefix = "dpapi:";
+    private static readonly byte[] ProtectionEntropy = Encoding.UTF8.GetBytes("AutoVPNConnect.Password");
 
     public SettingsManager(PersistentSettings settings) {
       this.settings = settings;
@@ -16,30 +21,26 @@ namespace AutoVPNConnect {
 
     internal bool IsConnectionConfigured => !string.IsNullOrEmpty(VpnConnectionName) && VpnConnectionName != "No settings found";
 
-    private static string Encrypt(string value) {
+    // DPAPI ties the ciphertext to the Windows user account: another account, or a copy of the
+    // settings taken to another machine, cannot decrypt it.
+    private static string Protect(string value) {
       if (string.IsNullOrEmpty(value))
         return null;
-
-      using (var tripleDes = new TripleDESCryptoServiceProvider {
-        Key = Encoding.UTF8.GetBytes(encryptionKey),
-        Mode = CipherMode.ECB,
-        Padding = PaddingMode.PKCS7
-      }) {
-        using (var cTransform = tripleDes.CreateEncryptor()) {
-          var inputArray = Encoding.UTF8.GetBytes(value);
-          var resultArray = cTransform.TransformFinalBlock(inputArray, 0, inputArray.Length);
-          tripleDes.Clear();
-          return Convert.ToBase64String(resultArray, 0, resultArray.Length);
-        }
-      }
+      var bytes = ProtectedData.Protect(Encoding.UTF8.GetBytes(value), ProtectionEntropy, DataProtectionScope.CurrentUser);
+      return ProtectedPrefix + Convert.ToBase64String(bytes);
     }
 
-    private static string Decrypt(string encryptedPassword) {
+    private static string Unprotect(string stored) {
+      var bytes = ProtectedData.Unprotect(Convert.FromBase64String(stored.Substring(ProtectedPrefix.Length)), ProtectionEntropy, DataProtectionScope.CurrentUser);
+      return Encoding.UTF8.GetString(bytes);
+    }
+
+    private static string DecryptLegacy(string encryptedPassword) {
       if (string.IsNullOrEmpty(encryptedPassword))
         return encryptedPassword;
 
       using (var tripleDes = new TripleDESCryptoServiceProvider {
-        Key = Encoding.UTF8.GetBytes(encryptionKey),
+        Key = Encoding.UTF8.GetBytes(legacyEncryptionKey),
         Mode = CipherMode.ECB,
         Padding = PaddingMode.PKCS7
       }) {
@@ -56,7 +57,8 @@ namespace AutoVPNConnect {
       try {
         using (var key = Registry.CurrentUser.OpenSubKey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run")) {
           if (key != null) {
-            var regValue = key.GetValue(Updater.ApplicationName)?.ToString();
+            // Quoted since this fork; entries written by earlier versions are not.
+            var regValue = key.GetValue(Updater.ApplicationName)?.ToString()?.Trim('"');
             return Updater.CurrentFileLocation.Equals(regValue, StringComparison.OrdinalIgnoreCase);
           }
         }
@@ -72,7 +74,8 @@ namespace AutoVPNConnect {
         using (var key = Registry.CurrentUser.OpenSubKey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", true)) {
           if (key != null) {
             if (enabled)
-              key.SetValue(Updater.ApplicationName, Application.ExecutablePath);
+              // Unquoted, a path with spaces lets Windows try "C:\Program.exe" and the like first.
+              key.SetValue(Updater.ApplicationName, '"' + Application.ExecutablePath + '"');
             else
               key.DeleteValue(Updater.ApplicationName, false);
           }
@@ -94,8 +97,31 @@ namespace AutoVPNConnect {
     }
 
     public string Password {
-      get => Decrypt(settings.GetValue("Password", ""));
-      set => settings.SetValue("Password", Encrypt(value) ?? "");
+      get {
+        var stored = settings.GetValue("Password", "");
+        if (string.IsNullOrEmpty(stored))
+          return stored;
+        try {
+          if (stored.StartsWith(ProtectedPrefix, StringComparison.Ordinal))
+            return Unprotect(stored);
+          // Written by an earlier version: re-store it under DPAPI, so the weak form does
+          // not stay on disk any longer than the first read.
+          var password = DecryptLegacy(stored);
+          try {
+            Password = password;
+          }
+          catch (Exception) {
+            // Re-storing failed; the password was still read, so use it and retry next time.
+          }
+          return password;
+        }
+        catch (Exception) {
+          // Unreadable, e.g. settings copied from another Windows account. Without a password
+          // the dial falls back to the credentials Windows holds, or to the dialog.
+          return "";
+        }
+      }
+      set => settings.SetValue("Password", Protect(value) ?? "");
     }
 
     public bool AutoStartApp {
