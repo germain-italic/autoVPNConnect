@@ -23,6 +23,22 @@ namespace AutoVPNConnect {
     private const int TunnelDownTimeoutMs = 5000;
     private const uint ErrorInvalidHandle = 6;
 
+    // Restores used to be tried only on a network change, so one failure (server down, Wi-Fi
+    // not ready yet) left the VPN down until the next change, possibly for hours. The watchdog
+    // retries: first after 30 s, then doubling up to every 10 minutes.
+    private const int WatchdogIntervalMs = 15000;
+    private static readonly TimeSpan FirstRetryDelay = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromMinutes(10);
+
+    // An interface can read as up while the tunnel carries nothing. A ping every 30 s to a
+    // host behind the VPN tells; three misses in a row count as a dead tunnel.
+    private static readonly TimeSpan HealthCheckInterval = TimeSpan.FromSeconds(30);
+    private const int HealthCheckTimeoutMs = 3000;
+    private const int HealthCheckFailureLimit = 3;
+
+    private const string NoCredentialsForRetry =
+      "No saved credentials: automatic retries cannot open the connection dialog.";
+
     private const int RAS_MaxEntryName = 256;
     private const int UNLEN = 256;
     private const int PWLEN = 256;
@@ -94,12 +110,20 @@ namespace AutoVPNConnect {
 
     readonly SettingsManager mSettingsManager;
 
+    private readonly Timer watchdog;
+
     public ConnectionManager(ref SettingsManager rSettingsManager) {
       mSettingsManager = rSettingsManager;
       NetworkChange.NetworkAddressChanged += NetworkAddressChanged;
+      watchdog = new Timer(_ => WatchdogTick(), null, WatchdogIntervalMs, WatchdogIntervalMs);
     }
 
     public event Action OnStatusChanged;
+
+    /// <summary>Something the user should hear about: the text, and whether it is bad news.</summary>
+    public event Action<string, bool> OnNotify;
+
+    private string ConnectionName => mSettingsManager.VpnConnectionName;
 
     private void NetworkAddressChanged(object sender, EventArgs e) {
       // A connection made outside the app (network flyout, rasphone) ends a manual
@@ -117,6 +141,7 @@ namespace AutoVPNConnect {
       }
       var connected = VpnIsConnected();
       RecordNetworkState(generation, downBeforeSample, connected);
+      TrackState();
       if (mSettingsManager.Reconnect) {
         // Windows delivers this on a shared notification thread; a reconnect can now take a
         // service restart's worth of time, so it must not run inline.
@@ -221,7 +246,9 @@ namespace AutoVPNConnect {
         }
         else {
           manuallyDisconnected = false;
-          SetLastError(ConnectToVpn());
+          var error = ConnectToVpn();
+          RecordAttempt(error);
+          SetLastError(error);
         }
       });
     }
@@ -314,15 +341,19 @@ namespace AutoVPNConnect {
     private string ClearStuckPort() {
       var portError = GetRasError(RasManService.ErrorPortAlreadyOpen);
 
+      ConnectionLog.Warning("port_stuck", new { connection = ConnectionName, fixEnabled = mSettingsManager.FixStuckPort });
       if (!mSettingsManager.FixStuckPort)
         return portError + " Enable 'Fix stuck VPN port' in the settings to restart the RasMan service automatically.";
 
       // allowRegistration: false - we are on a background thread with no window to own a UAC
       // prompt. If the helper task is missing, say so instead of raising one behind the user's
       // back; opening the main window registers it.
-      return RasManService.TryRestart(false, out var restartError)
-        ? null
-        : portError + " " + restartError;
+      if (RasManService.TryRestart(false, out var restartError)) {
+        ConnectionLog.Info("rasman_restarted");
+        return null;
+      }
+      ConnectionLog.Error("rasman_restart_failed", new { error = restartError });
+      return portError + " " + restartError;
     }
 
     private static int RunDialProcess(ProcessStartInfo startInfo) {
@@ -413,10 +444,15 @@ namespace AutoVPNConnect {
       }
     }
 
-    private string ConnectToVpn() {
+    /// <param name="allowDialog">
+    /// False for the watchdog's retries: without stored credentials the fallback is the
+    /// rasphone dialog, and popping it up every few minutes would be worse than waiting.
+    /// </param>
+    private string ConnectToVpn(bool allowDialog = true) {
       if (!TryBeginBusy()) return BusyResult;
       // Only once the slot is ours: clearing it before would wipe the error belonging to the
       // attempt that is already running. The UI hides it meanwhile, since we now count as busy.
+      var previousError = LastError;
       LastError = null;
       try {
         var vpnName = mSettingsManager.VpnConnectionName;
@@ -470,6 +506,10 @@ namespace AutoVPNConnect {
           return null;
         }
         else {
+          if (!allowDialog) {
+            LastError = previousError; // nothing was attempted; keep what the user last saw
+            return NoCredentialsForRetry;
+          }
           // Only reached without usable stored credentials, so the connection dialog is the
           // one option left. An unreachable rasdial arm that passed the password on the
           // command line, readable by any other process, was removed.
@@ -493,12 +533,281 @@ namespace AutoVPNConnect {
       }
     }
 
-    public void RestoreConnection() {
+    public void RestoreConnection(bool allowDialog = true) {
       if (manuallyDisconnected)
         return;
       if (!VpnIsConnected() && mSettingsManager.IsConnectionConfigured) {
-        SetLastError(ConnectToVpn());
+        var error = ConnectToVpn(allowDialog);
+        if (error == NoCredentialsForRetry) {
+          SuspendRetriesForCredentials();
+          return; // not a failure of the connection, and not worth replacing the real error
+        }
+        RecordAttempt(error);
+        SetLastError(error);
       }
     }
+
+    #region retries
+
+    private readonly object retryLock = new object();
+    private int failedAttempts;
+    private DateTime nextRetryAt = DateTime.MinValue;
+
+    // Without saved credentials every automatic retry is bound to fail. Stop retrying, say so
+    // once, and wait for something that can change it: a connection, or settings being saved.
+    private bool retriesNeedCredentials;
+
+    private void SuspendRetriesForCredentials() {
+      lock (retryLock) {
+        if (retriesNeedCredentials)
+          return;
+        retriesNeedCredentials = true;
+      }
+      ConnectionLog.Warning("retries_suspended", new { connection = ConnectionName, reason = "no_saved_credentials" });
+    }
+
+    /// <summary>Back to a first retry after 30 s, e.g. once the VPN is up again or settings change.</summary>
+    public void ResetRetrySchedule() {
+      lock (retryLock) {
+        failedAttempts = 0;
+        nextRetryAt = DateTime.MinValue;
+        retriesNeedCredentials = false;
+      }
+    }
+
+    /// <summary>Feeds the retry schedule: a success resets it, a failure pushes it back.</summary>
+    private void RecordAttempt(string error) {
+      if (error == BusyResult)
+        return; // another attempt was running; its own outcome counts
+      if (error == null) {
+        ResetRetrySchedule();
+        return;
+      }
+      lock (retryLock) {
+        failedAttempts++;
+        var doublings = Math.Min(failedAttempts - 1, 10);
+        var delay = TimeSpan.FromTicks(Math.Min(MaxRetryDelay.Ticks, FirstRetryDelay.Ticks << doublings));
+        nextRetryAt = DateTime.Now + delay;
+        var retries = mSettingsManager.Reconnect && !manuallyDisconnected;
+        ConnectionLog.Warning("connect_failed", new {
+          connection = ConnectionName,
+          attempt = failedAttempts,
+          error,
+          retryInSeconds = retries ? (int?)delay.TotalSeconds : null,
+        });
+      }
+    }
+
+    private bool IsRetryDue() {
+      lock (retryLock)
+        return !retriesNeedCredentials && DateTime.Now >= nextRetryAt;
+    }
+
+    #endregion
+
+    #region watchdog
+
+    private int watchdogRunning;
+
+    private void WatchdogTick() {
+      // A slow ping or dial must not let ticks pile up behind it.
+      if (Interlocked.Exchange(ref watchdogRunning, 1) != 0)
+        return;
+      try {
+        TrackState();
+        if (IsBusy || !mSettingsManager.IsConnectionConfigured)
+          return;
+        if (VpnIsConnected())
+          CheckTunnelHealth();
+        else if (mSettingsManager.Reconnect && !manuallyDisconnected && IsRetryDue())
+          RestoreConnection(allowDialog: false);
+      }
+      catch (Exception ex) {
+        ConnectionLog.Error("watchdog_error", new { error = ex.Message });
+      }
+      finally {
+        Volatile.Write(ref watchdogRunning, 0);
+      }
+    }
+
+    #endregion
+
+    #region state tracking
+
+    private readonly object stateLock = new object();
+    private bool? lastConnected;
+    private DateTime connectedAt;
+    private DateTime? lostAt; // set only for drops the user did not ask for
+
+    /// <summary>
+    /// Logs and announces transitions. Called on every network change and watchdog tick,
+    /// so a drop that raised no event is still noticed within one tick.
+    /// </summary>
+    private void TrackState() {
+      var connected = VpnIsConnected();
+      string bad = null, good = null;
+      lock (stateLock) {
+        if (lastConnected == connected)
+          return;
+        var wasConnected = lastConnected == true;
+        lastConnected = connected;
+        var now = DateTime.Now;
+        if (connected) {
+          connectedAt = now;
+          // However it came back, the next drop starts a fresh schedule: 30 s, not whatever
+          // an earlier run of failures had reached.
+          ResetRetrySchedule();
+          var outage = now - lostAt;
+          lostAt = null;
+          ConnectionLog.Info("connected", new { connection = ConnectionName, outageSeconds = (int?)outage?.TotalSeconds });
+          if (outage.HasValue)
+            good = $"VPN connection restored after {Describe(outage.Value)}.";
+        }
+        else if (wasConnected) {
+          var uptime = (int)(now - connectedAt).TotalSeconds;
+          if (manuallyDisconnected) {
+            ConnectionLog.Info("disconnected", new { connection = ConnectionName, reason = "manual", connectedSeconds = uptime });
+          }
+          else if (now.Ticks < Volatile.Read(ref healthHangUpUntilTicks)) {
+            // Already announced as unresponsive; still an outage, so its end is reported.
+            Volatile.Write(ref healthHangUpUntilTicks, 0);
+            lostAt = now;
+            ConnectionLog.Info("disconnected", new { connection = ConnectionName, reason = "health_check", connectedSeconds = uptime });
+          }
+          else {
+            lostAt = now;
+            ConnectionLog.Warning("connection_lost", new { connection = ConnectionName, connectedSeconds = uptime });
+            bad = mSettingsManager.Reconnect ? "VPN connection lost. Reconnecting..." : "VPN connection lost.";
+          }
+        }
+        // First sample at startup finding the VPN down: nothing happened, nothing to say.
+      }
+      if (bad != null)
+        OnNotify?.Invoke(bad, true);
+      if (good != null)
+        OnNotify?.Invoke(good, false);
+    }
+
+    private static string Describe(TimeSpan span) {
+      if (span.TotalMinutes < 1)
+        return $"{(int)span.TotalSeconds} s";
+      if (span.TotalHours < 1)
+        return $"{(int)span.TotalMinutes} min";
+      return $"{(int)span.TotalHours} h {span.Minutes} min";
+    }
+
+    #endregion
+
+    #region tunnel health
+
+    private DateTime nextHealthCheckAt = DateTime.MinValue;
+    private int healthFailures;
+    private bool healthReconnectTried;
+    private bool healthGivenUp;
+    private static readonly TimeSpan HealthHangUpWindow = TimeSpan.FromSeconds(30);
+    private long healthHangUpUntilTicks; // a drop before this instant was caused by the check
+
+    private string healthHost;
+    private volatile bool healthResetRequested;
+
+    /// <summary>
+    /// Starts the check afresh, for the settings UI. After giving up on a host, the check
+    /// stays quiet until that host answers; a new host or re-enabling it deserves a new try.
+    /// </summary>
+    public void ResetHealthCheck() => healthResetRequested = true;
+
+    private void ResetHealthState() {
+      healthFailures = 0;
+      healthReconnectTried = healthGivenUp = false;
+      nextHealthCheckAt = DateTime.MinValue;
+    }
+
+    private void CheckTunnelHealth() {
+      var host = mSettingsManager.HealthCheckHost;
+      // Consumed here, on the watchdog thread that owns the health fields.
+      if (healthResetRequested || host != healthHost) {
+        healthResetRequested = false;
+        healthHost = host;
+        ResetHealthState();
+      }
+      if (!mSettingsManager.HealthCheckEnabled || string.IsNullOrEmpty(host)) {
+        ResetHealthState();
+        return;
+      }
+      if (DateTime.Now < nextHealthCheckAt)
+        return;
+      nextHealthCheckAt = DateTime.Now + HealthCheckInterval;
+
+      var result = PingHost(host);
+      if (result.Success) {
+        if (healthFailures > 0 || healthGivenUp)
+          ConnectionLog.Info("health_check_recovered", new { connection = ConnectionName, host });
+        healthFailures = 0;
+        healthReconnectTried = healthGivenUp = false;
+        return;
+      }
+
+      healthFailures++;
+      if (healthGivenUp)
+        return; // already reported; stay quiet until the host answers again
+      ConnectionLog.Warning("health_check_failed", new { connection = ConnectionName, host, failures = healthFailures, error = result.Error });
+      if (healthFailures < HealthCheckFailureLimit)
+        return;
+      healthFailures = 0;
+
+      // Reconnecting did not help last time: the host itself is the likelier culprit, and
+      // reconnecting every minute and a half forever would only cut the user off.
+      if (healthReconnectTried) {
+        healthGivenUp = true;
+        ConnectionLog.Error("health_check_inconclusive", new { connection = ConnectionName, host });
+        OnNotify?.Invoke($"{host} still does not answer after reconnecting. Check that it answers pings.", true);
+        return;
+      }
+
+      var reconnect = mSettingsManager.Reconnect;
+      ConnectionLog.Error("tunnel_unresponsive", new { connection = ConnectionName, host, action = reconnect ? "reconnect" : "none" });
+      OnNotify?.Invoke(reconnect
+        ? $"The VPN is up but {host} does not answer. Reconnecting..."
+        : $"The VPN is up but {host} does not answer.", true);
+      if (!reconnect) {
+        // Said once. Without this, the same alert came back every 90 s for as long as the
+        // host stayed silent; the next successful ping re-arms it.
+        healthGivenUp = true;
+        return;
+      }
+      healthReconnectTried = true;
+      // The drop this hang-up causes is ours, not news. A time window rather than a flag: the
+      // interface can take longer to go down than the hang-up waits, and a flag cleared too
+      // early mislabelled that drop, while one left set mislabelled the next real one.
+      Volatile.Write(ref healthHangUpUntilTicks, (DateTime.Now + HealthHangUpWindow).Ticks);
+      if (DisconnectFromVpn() == null) {
+        TrackState(); // usually sees the drop already, since the hang-up waited for it
+        RestoreConnection(allowDialog: false);
+      }
+      else {
+        Volatile.Write(ref healthHangUpUntilTicks, 0); // nothing was hung up
+      }
+    }
+
+    /// <summary>One ping, for the watchdog and for the Test button.</summary>
+    public static (bool Success, long RoundtripMs, string Error) PingHost(string host) {
+      try {
+        using (var ping = new Ping()) {
+          var reply = ping.Send(host, HealthCheckTimeoutMs);
+          if (reply.Status == IPStatus.Success)
+            return (true, reply.RoundtripTime, null);
+          return (false, 0, reply.Status == IPStatus.TimedOut ? "no reply" : reply.Status.ToString());
+        }
+      }
+      catch (PingException ex) {
+        // The useful part, "host not found" and the like, is in the inner exception.
+        return (false, 0, ex.InnerException?.Message ?? ex.Message);
+      }
+      catch (Exception ex) {
+        return (false, 0, ex.Message);
+      }
+    }
+
+    #endregion
   }
 }

@@ -2,6 +2,7 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.IO;
 using System.Reflection;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -201,6 +202,7 @@ namespace AutoVPNConnect {
           menuItemAutoStart,
           menuItemReconnect,
           new ToolStripSeparator(),
+          new ToolStripMenuItem("Connection log", null, (_, _) => OpenConnectionLog()),
           new ToolStripMenuItem("Site", null, (_, _) => Updater.VisitAppSite()),
           new ToolStripMenuItem("Check for updates", null, (_, _) => Updater.CheckForUpdates(Updater.CheckUpdatesMode.AllMessages)),
           new ToolStripMenuItem("About…", null, (_, _) => ShowAbout()),
@@ -214,7 +216,17 @@ namespace AutoVPNConnect {
       cbxAutoStart.Checked = mSettingsManager.AutoStartApp;
       cbxReconnect.Checked = mSettingsManager.Reconnect;
       cbxFixStuckPort.Checked = mSettingsManager.FixStuckPort;
+      cbxNotifications.Checked = mSettingsManager.NotificationsEnabled;
+      cbxHealthCheck.Checked = mSettingsManager.HealthCheckEnabled;
+      txtHealthHost.Text = mSettingsManager.HealthCheckHost;
       loadingSettings = false;
+      statusToolTip.SetToolTip(cbxNotifications, "Balloons on the tray icon, so they need 'Run in background'.");
+      statusToolTip.SetToolTip(cbxHealthCheck,
+        "The VPN can read as connected while it carries nothing. Pinging a host behind it every " +
+        "30 s tells; after three misses the VPN is reconnected when 'Restore lost connection' is on.");
+      statusToolTip.SetToolTip(txtHealthHost, "A host that answers only through the VPN, e.g. an internal server or its IP.");
+      mConnectionManager.OnNotify += ShowNotification;
+      ConnectionLog.Info("app_started", new { version = Assembly.GetExecutingAssembly().GetName().Version.ToString() });
       // Connect at startup when restoring is on. This used to happen as a side effect of
       // setting the checkbox above, which also made ticking it by hand dial immediately.
       if (mSettingsManager.Reconnect) {
@@ -326,6 +338,8 @@ namespace AutoVPNConnect {
         mSettingsManager.VpnConnectionName = vpnConnectionName;
         mSettingsManager.UserName = userName;
         mSettingsManager.Password = password;
+        // Saved credentials may be what retries were waiting for.
+        mConnectionManager.ResetRetrySchedule();
 
         MessageBox.Show("Settings successfully saved.\n" +
         $"{Updater.ApplicationTitle} will automatically connect to: " +
@@ -470,9 +484,105 @@ namespace AutoVPNConnect {
       if (error == reportedError)
         return; // already announced, do not nag on every network change
       reportedError = error;
-      mNotifyIcon.BalloonTipTitle = Updater.ApplicationTitle;
-      mNotifyIcon.BalloonTipText = error;
+      ShowNotification(error, true);
+    }
+
+    /// <summary>
+    /// Tray balloon, when enabled. Balloons belong to the tray icon, which is shown only with
+    /// "Run in background"; without it there is nothing to attach them to.
+    /// </summary>
+    private void ShowNotification(string text, bool isWarning) {
+      if (InvokeRequired) {
+        BeginInvoke(new Action(() => ShowNotification(text, isWarning)));
+        return;
+      }
+      if (!mSettingsManager.NotificationsEnabled || !mNotifyIcon.Visible)
+        return;
+      mNotifyIcon.BalloonTipTitle = Updater.ApplicationTitle + (isWarning ? " - warning" : "");
+      mNotifyIcon.BalloonTipText = text;
       mNotifyIcon.ShowBalloonTip(5000);
+    }
+
+    private void cbxNotifications_CheckedChanged(object sender, EventArgs e) {
+      if (loadingSettings)
+        return;
+      mSettingsManager.NotificationsEnabled = cbxNotifications.Checked;
+    }
+
+    #region tunnel health check
+
+    private void cbxHealthCheck_CheckedChanged(object sender, EventArgs e) {
+      if (loadingSettings)
+        return;
+      mSettingsManager.HealthCheckEnabled = cbxHealthCheck.Checked;
+      mConnectionManager.ResetHealthCheck();
+      // Feedback right away rather than a silent check that may never have worked.
+      if (cbxHealthCheck.Checked)
+        TestHealthHost();
+      else
+        ShowHealthResult(string.Empty, Theme.Current.InfoColor);
+    }
+
+    private void txtHealthHost_Validated(object sender, EventArgs e) {
+      var host = txtHealthHost.Text.Trim();
+      if (host == mSettingsManager.HealthCheckHost)
+        return;
+      mSettingsManager.HealthCheckHost = host;
+      mConnectionManager.ResetHealthCheck();
+      if (cbxHealthCheck.Checked)
+        TestHealthHost();
+    }
+
+    private void btnHealthTest_Click(object sender, EventArgs e) {
+      TestHealthHost();
+    }
+
+    private async void TestHealthHost() {
+      var host = txtHealthHost.Text.Trim();
+      if (host.Length == 0) {
+        ShowHealthResult("Enter a host that answers only through the VPN.", Theme.Current.WarnColor);
+        txtHealthHost.Focus();
+        return;
+      }
+      mSettingsManager.HealthCheckHost = host;
+      btnHealthTest.Enabled = false;
+      ShowHealthResult($"Pinging {host}...", Theme.Current.InfoColor);
+      var result = await Task.Run(() => ConnectionManager.PingHost(host));
+      var vpnUp = await Task.Run(() => mConnectionManager.VpnIsConnected());
+      btnHealthTest.Enabled = true;
+
+      // A host that answers with the VPN down proves nothing about the tunnel: say so, since
+      // that is the one mistake that makes the check useless.
+      if (result.Success && !vpnUp)
+        ShowHealthResult($"{host} answers without the VPN: pick a host reachable only through it.", Theme.Current.WarnColor);
+      else if (result.Success)
+        ShowHealthResult($"{host} answers through the VPN ({result.RoundtripMs} ms).", Theme.Current.MessageColor);
+      else if (!vpnUp)
+        ShowHealthResult($"{host}: {result.Error}. Connect the VPN and test again.", Theme.Current.WarnColor);
+      else
+        ShowHealthResult($"{host}: {result.Error}.", Theme.Current.WarnColor);
+    }
+
+    private void ShowHealthResult(string text, Color color) {
+      lblHealthResult.Text = text;
+      lblHealthResult.ForeColor = color;
+      statusToolTip.SetToolTip(lblHealthResult, text);
+    }
+
+    #endregion
+
+    private static void OpenConnectionLog() {
+      if (!File.Exists(ConnectionLog.FilePath)) {
+        MessageBox.Show("No connection events have been recorded yet.", Updater.ApplicationTitle, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        return;
+      }
+      try {
+        // Notepad rather than the shell: .jsonl often has no associated program.
+        Process.Start("notepad.exe", '"' + ConnectionLog.FilePath + '"');
+      }
+      catch (Exception ex) {
+        MessageBox.Show($"Cannot open {ConnectionLog.FilePath}:{Environment.NewLine}{ex.Message}", Updater.ApplicationTitle, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+      }
     }
 
     private void menuReconnect_Click(object sender, EventArgs e) {

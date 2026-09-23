@@ -38,6 +38,12 @@
       this.lblUsername = new System.Windows.Forms.Label();
       this.textBoxUsername = new System.Windows.Forms.TextBox();
       this.cmbConnections = new System.Windows.Forms.ComboBox();
+      this.cbxNotifications = new System.Windows.Forms.CheckBox();
+      this.cbxHealthCheck = new System.Windows.Forms.CheckBox();
+      this.lblHealthHost = new System.Windows.Forms.Label();
+      this.txtHealthHost = new System.Windows.Forms.TextBox();
+      this.btnHealthTest = new System.Windows.Forms.Button();
+      this.lblHealthResult = new System.Windows.Forms.Label();
       this.SuspendLayout();
       // 
       // lblConnectsTo
@@ -73,14 +79,78 @@
       this.cbxFixStuckPort.UseVisualStyleBackColor = true;
       this.cbxFixStuckPort.CheckedChanged += new System.EventHandler(this.cbxFixStuckPort_CheckedChanged);
       //
+      // cbxNotifications
+      //
+      this.cbxNotifications.AutoSize = true;
+      this.cbxNotifications.Location = new System.Drawing.Point(14, 226);
+      this.cbxNotifications.Margin = new System.Windows.Forms.Padding(2);
+      this.cbxNotifications.Name = "cbxNotifications";
+      this.cbxNotifications.Size = new System.Drawing.Size(113, 17);
+      this.cbxNotifications.TabIndex = 13;
+      this.cbxNotifications.Text = "Show notifications";
+      this.cbxNotifications.UseVisualStyleBackColor = true;
+      this.cbxNotifications.CheckedChanged += new System.EventHandler(this.cbxNotifications_CheckedChanged);
+      //
+      // cbxHealthCheck
+      //
+      this.cbxHealthCheck.AutoSize = true;
+      this.cbxHealthCheck.Location = new System.Drawing.Point(14, 247);
+      this.cbxHealthCheck.Margin = new System.Windows.Forms.Padding(2);
+      this.cbxHealthCheck.Name = "cbxHealthCheck";
+      this.cbxHealthCheck.Size = new System.Drawing.Size(190, 17);
+      this.cbxHealthCheck.TabIndex = 14;
+      this.cbxHealthCheck.Text = "Check that the VPN carries traffic";
+      this.cbxHealthCheck.UseVisualStyleBackColor = true;
+      this.cbxHealthCheck.CheckedChanged += new System.EventHandler(this.cbxHealthCheck_CheckedChanged);
+      //
+      // lblHealthHost
+      //
+      this.lblHealthHost.AutoSize = true;
+      this.lblHealthHost.Location = new System.Drawing.Point(29, 272);
+      this.lblHealthHost.Margin = new System.Windows.Forms.Padding(2, 0, 2, 0);
+      this.lblHealthHost.Name = "lblHealthHost";
+      this.lblHealthHost.Size = new System.Drawing.Size(51, 13);
+      this.lblHealthHost.TabIndex = 15;
+      this.lblHealthHost.Text = "Ping host";
+      //
+      // txtHealthHost
+      //
+      this.txtHealthHost.Location = new System.Drawing.Point(90, 269);
+      this.txtHealthHost.Margin = new System.Windows.Forms.Padding(2);
+      this.txtHealthHost.Name = "txtHealthHost";
+      this.txtHealthHost.Size = new System.Drawing.Size(131, 20);
+      this.txtHealthHost.TabIndex = 16;
+      this.txtHealthHost.Validated += new System.EventHandler(this.txtHealthHost_Validated);
+      //
+      // btnHealthTest
+      //
+      this.btnHealthTest.Location = new System.Drawing.Point(227, 268);
+      this.btnHealthTest.Margin = new System.Windows.Forms.Padding(2);
+      this.btnHealthTest.Name = "btnHealthTest";
+      this.btnHealthTest.Size = new System.Drawing.Size(70, 22);
+      this.btnHealthTest.TabIndex = 17;
+      this.btnHealthTest.Text = "Test";
+      this.btnHealthTest.UseVisualStyleBackColor = true;
+      this.btnHealthTest.Click += new System.EventHandler(this.btnHealthTest_Click);
+      //
+      // lblHealthResult
+      //
+      this.lblHealthResult.AutoEllipsis = true;
+      this.lblHealthResult.Location = new System.Drawing.Point(88, 292);
+      this.lblHealthResult.Margin = new System.Windows.Forms.Padding(2, 0, 2, 0);
+      this.lblHealthResult.Name = "lblHealthResult";
+      this.lblHealthResult.Size = new System.Drawing.Size(209, 13);
+      this.lblHealthResult.TabIndex = 18;
+      this.lblHealthResult.Text = "";
+      //
       // lblLastError
       //
       this.lblLastError.AutoEllipsis = true;
-      this.lblLastError.Location = new System.Drawing.Point(11, 228);
+      this.lblLastError.Location = new System.Drawing.Point(11, 311);
       this.lblLastError.Margin = new System.Windows.Forms.Padding(2, 0, 2, 0);
       this.lblLastError.Name = "lblLastError";
       this.lblLastError.Size = new System.Drawing.Size(286, 30);
-      this.lblLastError.TabIndex = 13;
+      this.lblLastError.TabIndex = 19;
       this.lblLastError.Text = "";
       //
       // cbxReconnect
@@ -191,7 +261,13 @@
       // 
       this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
       this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-      this.ClientSize = new System.Drawing.Size(308, 264);
+      this.ClientSize = new System.Drawing.Size(308, 347);
+      this.Controls.Add(this.lblHealthResult);
+      this.Controls.Add(this.btnHealthTest);
+      this.Controls.Add(this.txtHealthHost);
+      this.Controls.Add(this.lblHealthHost);
+      this.Controls.Add(this.cbxHealthCheck);
+      this.Controls.Add(this.cbxNotifications);
       this.Controls.Add(this.lblLastError);
       this.Controls.Add(this.cbxFixStuckPort);
       this.Controls.Add(this.cbxRunInBackground);
@@ -234,6 +310,12 @@
     private System.Windows.Forms.CheckBox cbxFixStuckPort;
     private System.Windows.Forms.Label lblLastError;
     private System.Windows.Forms.Button btnToggle;
+    private System.Windows.Forms.CheckBox cbxNotifications;
+    private System.Windows.Forms.CheckBox cbxHealthCheck;
+    private System.Windows.Forms.Label lblHealthHost;
+    private System.Windows.Forms.TextBox txtHealthHost;
+    private System.Windows.Forms.Button btnHealthTest;
+    private System.Windows.Forms.Label lblHealthResult;
   }
 }
 

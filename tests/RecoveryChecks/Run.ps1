@@ -7,7 +7,7 @@ $probeId = 'AutoVPNConnect-Probe-' + [Guid]::NewGuid().ToString('N')
 $scratch = Join-Path ([IO.Path]::GetTempPath()) $probeId
 try {
     New-Item -ItemType Directory -Path $scratch | Out-Null
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'RecoveryChecks.csproj'), (Join-Path $PSScriptRoot 'Program.cs'), (Join-Path $PSScriptRoot 'SettingsManager.cs') -Destination $scratch
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'RecoveryChecks.csproj'), (Join-Path $PSScriptRoot 'Program.cs'), (Join-Path $PSScriptRoot 'SettingsManager.cs'), (Join-Path $PSScriptRoot 'ConnectionLog.cs') -Destination $scratch
     Copy-Item -LiteralPath (Join-Path $repo 'AutoVPNConnect/ConnectionManager.cs') -Destination $scratch
     $source = [IO.File]::ReadAllText((Join-Path $repo 'AutoVPNConnect/RasManService.cs'))
     # Change only the scheduler namespace and wait budget in a disposable copy. The real

@@ -14,8 +14,12 @@ independently of the original project.
 
 ### What can it do?
 
- - Reconnect with saved user/password (by rasdial command).
+ - Reconnect with saved user/password, through the Windows RAS API.
  - Reconnect without saved user/password by rasphone command (The VPN connection dialog box will be displayed.)
+ - Retry a failed reconnect on its own, with increasing delays, see below.
+ - Detect a VPN that reads as connected but carries no traffic, by pinging a host behind it.
+ - Tray notifications when the VPN drops, comes back or fails to reconnect.
+ - Connection history in a standard JSON Lines log.
  - Recover from RAS error 633 (`the specified port is already open`) by restarting the RasMan service, see below.
  - Runs as background application with tray icon.
  - `Light` / `Dark` themes with `Auto` mode to switch when changing system settings
@@ -129,6 +133,55 @@ Behaviour:
    Declining keeps the existing task.
  - **Removal**: untick the option, or
    `schtasks /Delete /TN "AutoVPNConnect\RestartRasMan" /F`.
+
+### Retries, tunnel health and notifications
+
+ - **Retries**: with *Restore lost connection* ticked, a failed reconnect is retried after
+   30 s, then after a delay doubling up to 10 min, until it succeeds. A manual disconnect
+   stops the retries. Retries never open the `rasphone` dialog: without saved credentials
+   they stop, which the log records once, until the VPN connects or the settings are saved.
+ - **Tunnel health**, option *Check that the VPN carries traffic*: pings the host you enter
+   every 30 s while connected. Pick a host that answers only through the VPN, such as an
+   internal server; *Test* checks it, and warns when it also answers with the VPN down.
+   After three missed pings the VPN is reconnected if *Restore lost connection* is ticked,
+   otherwise you are notified once, until the host answers again. If the host still does not answer after one reconnect,
+   the app stops reconnecting for it and says so, until the host answers again.
+ - **Notifications**, option *Show notifications*: tray balloons for a drop, the connection
+   coming back (with the outage duration), a failed reconnect and an unresponsive tunnel.
+   They need *Run in background*, which shows the tray icon they belong to.
+
+### Connection log
+
+Events are appended to `%LOCALAPPDATA%\AutoVPNConnect\connection.jsonl`, in
+[JSON Lines](https://jsonlines.org): one JSON object per line, readable by `jq`, PowerShell's
+`ConvertFrom-Json` or a log collector. *Connection log* in the tray menu opens it. The file
+rotates at 1 MB into `connection.1.jsonl`.
+
+Every line has `time` (RFC 3339, local time with offset), `level` (`info`, `warning`,
+`error`) and `event`; other fields depend on the event:
+
+```json
+{"time":"2026-09-24T09:12:03.412+04:00","level":"warning","event":"connection_lost","connection":"Office VPN","connectedSeconds":5423}
+{"time":"2026-09-24T09:12:34.020+04:00","level":"warning","event":"connect_failed","connection":"Office VPN","attempt":1,"error":"Error 800: ...","retryInSeconds":30}
+{"time":"2026-09-24T09:13:05.871+04:00","level":"info","event":"connected","connection":"Office VPN","outageSeconds":62}
+```
+
+Events: `app_started`, `connected`, `disconnected` (manual or health check),
+`connection_lost`, `connect_failed`, `retries_suspended`, `health_check_failed`, `health_check_recovered`,
+`tunnel_unresponsive`, `health_check_inconclusive`, `port_stuck`, `rasman_restarted`,
+`rasman_restart_failed`, `watchdog_error`.
+
+```powershell
+Get-Content $env:LOCALAPPDATA\AutoVPNConnect\connection.jsonl | ConvertFrom-Json |
+  Where-Object event -eq connection_lost | Format-Table time, connectedSeconds
+```
+
+## Roadmap
+
+ - **Drop the `SergiyE.Common` dependency.** It is published without public source, and
+   its newer versions are stubs. Reimplementing the few parts in use (updater, settings
+   storage, system menu helpers, themes) would also let the updater verify a release's
+   SHA-256 before installing it.
 
 ## Contributing
 

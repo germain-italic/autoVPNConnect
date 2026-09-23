@@ -25,6 +25,8 @@ static class RecoveryChecks {
       Check(IntPtr.Size == 4, "probe runs as x86, matching the application's Prefer32Bit setting");
       CheckHangUp();
       CheckManualDisconnect();
+      CheckRetrySchedule();
+      CheckPing();
       CheckServiceScript();
       if (Array.IndexOf(args, "--skip-scheduler") >= 0)
         Console.WriteLine("SKIP: real Task Scheduler result checks (explicitly requested)");
@@ -88,6 +90,44 @@ static class RecoveryChecks {
 
   static string Encoded(string script) {
     return Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
+  }
+
+  static void CheckRetrySchedule() {
+    // Production RecordAttempt on an uninitialised manager: no timer, no network events, no dial.
+    var type = typeof(ConnectionManager);
+    const BindingFlags flags = BindingFlags.NonPublic | BindingFlags.Instance;
+    var manager = (ConnectionManager)FormatterServices.GetUninitializedObject(type);
+    type.GetField("retryLock", flags).SetValue(manager, new object());
+    type.GetField("mSettingsManager", flags).SetValue(manager, new SettingsManager { Reconnect = true });
+    var record = type.GetMethod("RecordAttempt", flags);
+    var next = type.GetField("nextRetryAt", flags);
+    double DelayAfterFailure() {
+      var before = DateTime.Now;
+      record.Invoke(manager, new object[] { "simulated failure" });
+      return ((DateTime)next.GetValue(manager) - before).TotalSeconds;
+    }
+
+    var delays = new double[7];
+    for (var i = 0; i < delays.Length; i++)
+      delays[i] = DelayAfterFailure();
+    var expected = new[] { 30, 60, 120, 240, 480, 600, 600 };
+    for (var i = 0; i < expected.Length; i++)
+      Check(Math.Abs(delays[i] - expected[i]) < 2, $"retry {i + 1} waits {expected[i]} s (got {delays[i]:0.#})");
+
+    record.Invoke(manager, new object[] { "Busy" });
+    Check((int)type.GetField("failedAttempts", flags).GetValue(manager) == 7, "a busy result does not count as a failure");
+    record.Invoke(manager, new object[] { null });
+    Check((int)type.GetField("failedAttempts", flags).GetValue(manager) == 0 && (DateTime)next.GetValue(manager) == DateTime.MinValue,
+      "a success resets the schedule");
+    Check(Math.Abs(DelayAfterFailure() - 30) < 2, "the first failure after a success waits 30 s again");
+  }
+
+  static void CheckPing() {
+    var local = ConnectionManager.PingHost("127.0.0.1");
+    Check(local.Success, "loopback answers the health-check ping: " + local.Error);
+    // .invalid is reserved (RFC 2606) and can never resolve.
+    var missing = ConnectionManager.PingHost("autovpnconnect-probe.invalid");
+    Check(!missing.Success && !string.IsNullOrEmpty(missing.Error), "an unresolvable host fails with a message");
   }
 
   static void CheckServiceScript() {

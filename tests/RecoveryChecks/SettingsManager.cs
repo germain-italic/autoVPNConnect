@@ -7,5 +7,7 @@ namespace AutoVPNConnect {
     public string VpnConnectionName { get; set; }
     public string UserName { get; set; }
     public string Password { get; set; }
+    public bool HealthCheckEnabled { get; set; }
+    public string HealthCheckHost { get; set; }
   }
 }

@@ -143,5 +143,26 @@ namespace AutoVPNConnect {
       get => settings.GetValue("FixStuckPort", true);
       set => settings.SetValue("FixStuckPort", value);
     }
+
+    /// <summary>Tray balloons for drops, reconnections and failures.</summary>
+    public bool NotificationsEnabled {
+      get => settings.GetValue("NotificationsEnabled", true);
+      set => settings.SetValue("NotificationsEnabled", value);
+    }
+
+    /// <summary>
+    /// Pings HealthCheckHost while connected. The interface can read as up while the tunnel
+    /// carries nothing; only traffic through it tells the two apart.
+    /// </summary>
+    public bool HealthCheckEnabled {
+      get => settings.GetValue("HealthCheckEnabled", false);
+      set => settings.SetValue("HealthCheckEnabled", value);
+    }
+
+    /// <summary>A host that answers only through the VPN, e.g. an internal server.</summary>
+    public string HealthCheckHost {
+      get => settings.GetValue("HealthCheckHost", "");
+      set => settings.SetValue("HealthCheckHost", value?.Trim() ?? "");
+    }
   }
 }
