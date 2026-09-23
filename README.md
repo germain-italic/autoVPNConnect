@@ -22,45 +22,6 @@ independently of the original project.
  - No installation required, just save the executable file anywhere on your computer and run it.
  
 
-### Fix stuck VPN port (RAS error 633)
-
-After a VPN session drops, Windows sometimes keeps the WAN Miniport port marked as in use.
-Every later dial then fails with `Error 633: The port is already open`, and no amount of
-retrying helps - the RasMan service has to be restarted before the port is released. Left
-alone, this silently defeats auto reconnect until someone notices and fixes it by hand.
-
-With **Fix stuck VPN port** enabled (the default), a dial that fails with 633 first hangs up
-the session left over from the dropped connection and retries; if the port is still held, it
-restarts RasMan and retries once more.
-
-This recovery applies to connections dialed through the RAS API with usable saved
-credentials. When credentials are unavailable, the application opens the Windows
-`rasphone` connection dialog; it cannot apply this recovery to errors inside that dialog.
-Restarting RasMan affects the whole machine and can disconnect other active VPN or
-dial-up connections, not just the configured VPN.
-
-Restarting a service needs administrator rights, so the application registers a scheduled
-task, `AutoVPNConnect\RestartRasMan`, that performs the restart. It is registered the first
-time you open the main window (or when you tick the option), never in the background while a
-reconnect is failing - that is the only UAC prompt, and the task is triggered silently
-afterwards, which is what keeps unattended reconnects working while the app sits in the tray.
-Because `schtasks /Run` only reports that the task was queued, the outcome is read back from
-the Task Scheduler itself - a restart that never ran would otherwise pass for a successful one.
-
-If the application already runs elevated, no task is created and the service is restarted
-directly, stopping and restoring any dependent services.
-
-The task carries the version of the script it was created with, so a later release that
-changes what the task does replaces it instead of leaving the old one in place. That costs
-one further UAC prompt, once, the first time you open the window after such an update; if you
-decline it, the existing task keeps working as before.
-
-Unticking the option offers to remove the task. It can also be removed by hand:
-
-```
-schtasks /Delete /TN "AutoVPNConnect\RestartRasMan" /F
-```
-
 ### UI example 
 
 Main app window:
@@ -83,11 +44,21 @@ and *Check for updates* entries point to this fork, not to the original project.
 
 ## Why this fork
 
-The original source builds, but the resulting executable cannot start. Two separate causes:
+The original project, as published, does not build into a working program. Its source is
+public; the library it depends on is not.
 
- - `SergiyE.Common` and `SergiyE.Common.UI`, the original author's NuGet packages, resolve to
-   version 1.0.9745, which is published as a stub: 470 methods of `SergiyE.Common` throw
-   `NotImplementedException`, including the first one called at startup.
+ - **The dependency is withheld.** `SergiyE.Common` and `SergiyE.Common.UI` are the author's
+   own NuGet packages. The current version, 1.0.9745, is published as a stub: 470 methods of
+   `SergiyE.Common` throw `NotImplementedException`, including the first one called at
+   startup. An older version, 1.0.9500, still has real code; nothing in the project says so,
+   and its `1.*` reference picks the stub.
+ - **Its source cannot be found.** Both packages are labelled GPL-3.0-only and name
+   `https://github.com/SergiyE/Common` as their project and repository. That link returns
+   404, and no public repository of the `sergiye` account contains the library.
+
+The original source builds, but the resulting executable cannot start. A second, separate
+cause:
+
  - `Costura.Fody` 4.1.0, when the project is built with `dotnet build`, weaves references to
    .NET 8 (`System.Private.CoreLib 8.0`) into an executable that runs on .NET Framework 4.7.2.
    It fails before `Main` with a `FileNotFoundException`.
@@ -103,7 +74,8 @@ with this reply from the maintainer:
 > Clearly and concisely.
 > Respect other people's time.
 
-Changes made in this fork are therefore not offered upstream.
+The reply addresses neither the stub package nor the missing source. Changes made in this
+fork are therefore not offered upstream.
 
 ## What this fork changes
 
@@ -113,10 +85,26 @@ Changes made in this fork are therefore not offered upstream.
  - **TLS validation restored.** The updater in `SergiyE.Common` installs a process-wide
    certificate callback that accepts any certificate, then downloads and runs a replacement
    executable. The callback is removed at startup.
- - **RAS error 633 recovery**, described above.
+ - **RAS error 633 recovery**, described below.
  - **Settings fields load once**, so a network change no longer duplicates the VPN entry or
    overwrites a user name being typed.
  - **Links, update check and About box** point to this fork.
+
+### Fix stuck VPN port (RAS error 633)
+
+ - **Symptom**: after a VPN drop, Windows keeps the WAN Miniport port in use. Every dial then
+   fails with `Error 633: The port is already open` until RasMan restarts.
+ - **Recovery**, option *Fix stuck VPN port*, on by default: hang up the leftover session and
+   retry; if the port is still held, restart RasMan and retry once.
+ - **Scope**: dials through the RAS API with saved credentials only, not the `rasphone` dialog.
+ - **Side effect**: restarting RasMan drops every VPN and dial-up connection on the machine.
+ - **Elevation**: a scheduled task, `AutoVPNConnect\RestartRasMan`, registered when the main
+   window opens, with a single UAC prompt; the outcome is read back from Task Scheduler. When
+   the app already runs elevated, RasMan is restarted directly.
+ - **Updates**: the task is versioned; a release that changes it asks for UAC once more.
+   Declining keeps the existing task.
+ - **Removal**: untick the option, or
+   `schtasks /Delete /TN "AutoVPNConnect\RestartRasMan" /F`.
 
 ## Contributing
 
