@@ -20,6 +20,7 @@ namespace AutoVPNConnect {
     private const int HangUpTimeoutMs = 5000;
     private const int HangUpPollMs = 100;
     private const int HangUpFallbackMs = 3000;
+    private const int TunnelDownTimeoutMs = 5000;
     private const uint ErrorInvalidHandle = 6;
 
     private const int RAS_MaxEntryName = 256;
@@ -102,16 +103,40 @@ namespace AutoVPNConnect {
 
     private void NetworkAddressChanged(object sender, EventArgs e) {
       // A connection made outside the app (network flyout, rasphone) ends a manual
-      // disconnect; otherwise that connection's next drop would never be restored. Not while
-      // busy: the hang-up itself raises address changes while the tunnel is still up.
-      if (manuallyDisconnected && !IsBusy && VpnIsConnected())
-        manuallyDisconnected = false;
+      // disconnect; otherwise that connection's next drop would never be restored. The tunnel
+      // must first have been seen down: while the hang-up completes the interface still reads
+      // as up, and taking that for a new connection let the drop that follows redial.
+      // Sampling the interface takes a while and happens outside the lock, so the sample can
+      // be stale by the time it is used. It only counts as a new connection if the tunnel was
+      // already known down before sampling began, and no other manual disconnect started since.
+      long generation;
+      bool downBeforeSample;
+      lock (manualDisconnectLock) {
+        generation = disconnectGeneration;
+        downBeforeSample = tunnelDownSinceManualDisconnect;
+      }
+      var connected = VpnIsConnected();
+      RecordNetworkState(generation, downBeforeSample, connected);
       if (mSettingsManager.Reconnect) {
         // Windows delivers this on a shared notification thread; a reconnect can now take a
         // service restart's worth of time, so it must not run inline.
         Task.Run(() => RestoreConnection());
       }
       OnStatusChanged?.Invoke();
+    }
+
+    private void RecordNetworkState(long generation, bool downBeforeSample, bool connected) {
+      lock (manualDisconnectLock) {
+        if (manuallyDisconnected && generation == disconnectGeneration) {
+          if (!connected)
+            tunnelDownSinceManualDisconnect = true;
+          // Once the old tunnel was observed down, this is a new connection even if the
+          // disconnect worker is still waiting. Discarding it while busy would leave manual
+          // suppression armed at the next drop. The dial slot still prevents concurrent work.
+          else if (downBeforeSample)
+            manuallyDisconnected = false;
+        }
+      }
     }
 
     public bool IsBusy => Volatile.Read(ref busyFlag) != 0;
@@ -169,11 +194,26 @@ namespace AutoVPNConnect {
     /// </summary>
     private volatile bool manuallyDisconnected;
 
+    /// <summary>
+    /// Whether the tunnel has been seen down since the manual disconnect. Only then can seeing
+    /// it up again mean a new connection rather than the old one still closing.
+    /// </summary>
+    private volatile bool tunnelDownSinceManualDisconnect;
+
+    private readonly object manualDisconnectLock = new object();
+
+    /// <summary>Counts manual disconnects, so a sample taken during an earlier one is ignored.</summary>
+    private long disconnectGeneration;
+
     public void ToggleConnection() {
       Task.Run(() => {
         if (VpnIsConnected()) {
           // Raised before hanging up: the address change arrives while the hang-up runs.
-          manuallyDisconnected = true;
+          lock (manualDisconnectLock) {
+            disconnectGeneration++;
+            tunnelDownSinceManualDisconnect = false;
+            manuallyDisconnected = true;
+          }
           var error = DisconnectFromVpn();
           if (error != null)
             manuallyDisconnected = false; // still connected, keep guarding against drops
@@ -313,10 +353,45 @@ namespace AutoVPNConnect {
         return BusyResult;
       }
       try {
+        var error = HangUp();
+        // Still busy here: wait for the interface to read as down, so the closing tunnel is
+        // never taken for a new connection, and record that it went down. If it never does,
+        // the manual disconnect simply stays in force.
+        if (error == null && WaitForTunnelDown()) {
+          lock (manualDisconnectLock)
+            tunnelDownSinceManualDisconnect = true;
+        }
+        return error;
+      }
+      finally {
+        EndBusy();
+      }
+    }
+
+    /// <summary>
+    /// The interface can outlive the RAS session by a moment, which is what made a closing
+    /// tunnel look like a fresh connection. Returns false if it still reads as up at the end.
+    /// </summary>
+    private bool WaitForTunnelDown() {
+      var elapsed = Stopwatch.StartNew();
+      while (VpnIsConnected()) {
+        if (elapsed.ElapsedMilliseconds >= TunnelDownTimeoutMs)
+          return false;
+        Thread.Sleep(HangUpPollMs);
+      }
+      return true;
+    }
+
+    private string HangUp() {
+      try {
         if (hRasConn != IntPtr.Zero) {
-          uint ret = RasHangUp(hRasConn);
+          var handle = hRasConn;
+          uint ret = RasHangUp(handle);
           hRasConn = IntPtr.Zero;
           if (ret == 0) {
+            // RasHangUp returns before the session is gone. Stay busy until it is, so the
+            // closing tunnel is not taken for a connection and nothing dials into it.
+            WaitForHangUp(handle);
             return null;
           }
           //else {
@@ -335,9 +410,6 @@ namespace AutoVPNConnect {
       }
       catch (Exception ex) {
         return ex.Message;
-      }
-      finally {
-        EndBusy();
       }
     }
 

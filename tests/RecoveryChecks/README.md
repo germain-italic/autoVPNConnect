@@ -16,6 +16,10 @@ minutes. Substitutions fail explicitly if the expected declarations change.
 
 The checks cover:
 
+- Manual-disconnect state transitions with simulated network observations: a closing tunnel
+  and stale samples cannot re-arm recovery, but an external connection after an observed
+  disconnect does re-arm it even while the disconnect worker is busy. This uses the production
+  transition method without subscribing to network events or dialing a VPN.
 - The real `RasGetConnectStatus` P/Invoke with a null handle: Windows must return
   `ERROR_INVALID_HANDLE`, and `WaitForHangUp` must return without the fallback delay.
 - The PowerShell action extracted from the generated task XML, with service cmdlets
@@ -40,10 +44,11 @@ Do not describe such a run as validating Task Scheduler integration.
 These checks do **not** validate UAC registration, the SYSTEM task's permissions, a real
 service restart, the lifecycle of a live RAS handle, full error 633 recovery, or the UI.
 In particular, the invalid-handle check does not prove that an active connection finishes
-disconnecting correctly. Application execution remains blocked by the dependency issue
-described in the root README.
+disconnecting correctly. The application runs since the dependency fixes described in the
+root README, but these checks never start it: a passing run says nothing about the
+application itself.
 
-Once a runnable build is available, manually check the UI change by editing the VPN name
-and username without saving, then causing a status refresh (for example, changing the
-theme). The typed values must remain intact; repeated refreshes must not add duplicate
-VPN names. Check a saved configuration and a fresh configuration separately.
+Check the UI by hand on a real build: edit the VPN name and username without saving, then
+cause a status refresh (for example, changing the theme). The typed values must remain
+intact; repeated refreshes must not add duplicate VPN names. Check a saved configuration and
+a fresh configuration separately.

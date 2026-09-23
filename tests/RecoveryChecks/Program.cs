@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization;
 using System.Text;
 using System.Xml;
 using AutoVPNConnect;
@@ -23,6 +24,7 @@ static class RecoveryChecks {
     try {
       Check(IntPtr.Size == 4, "probe runs as x86, matching the application's Prefer32Bit setting");
       CheckHangUp();
+      CheckManualDisconnect();
       CheckServiceScript();
       if (Array.IndexOf(args, "--skip-scheduler") >= 0)
         Console.WriteLine("SKIP: real Task Scheduler result checks (explicitly requested)");
@@ -48,6 +50,40 @@ static class RecoveryChecks {
     Call(type, "WaitForHangUp", IntPtr.Zero);
     Check(timer.Elapsed < TimeSpan.FromSeconds(2), "hang-up wait returns promptly for an invalid handle");
     // Never call RasDial or RasHangUp: even a test must not disturb a live VPN.
+  }
+
+  static void CheckManualDisconnect() {
+    // Bypass the constructor so this probe never subscribes to real network events. Only
+    // feed observations into the production state transition; no dial or hang-up is called.
+    var type = typeof(ConnectionManager);
+    const BindingFlags flags = BindingFlags.NonPublic | BindingFlags.Instance;
+    var manager = (ConnectionManager)FormatterServices.GetUninitializedObject(type);
+    type.GetField("manualDisconnectLock", flags).SetValue(manager, new object());
+    var manual = type.GetField("manuallyDisconnected", flags);
+    var down = type.GetField("tunnelDownSinceManualDisconnect", flags);
+    manual.SetValue(manager, true);
+    type.GetField("disconnectGeneration", flags).SetValue(manager, 2L);
+    type.GetMethod("TryBeginBusy", flags).Invoke(manager, null);
+    var record = type.GetMethod("RecordNetworkState", flags);
+    void Observe(long generation, bool downBeforeSample, bool connected) {
+      record.Invoke(manager, new object[] { generation, downBeforeSample, connected });
+    }
+
+    Observe(1, false, false);
+    Check(!(bool)down.GetValue(manager), "a down observation from an earlier disconnect is ignored");
+    Observe(2, false, true);
+    Check((bool)manual.GetValue(manager), "the closing tunnel still being up does not re-arm reconnect");
+    Observe(2, false, false);
+    Check((bool)down.GetValue(manager), "the tunnel going down is remembered while busy");
+    Observe(2, false, true);
+    Check((bool)manual.GetValue(manager), "an up sample begun before the tunnel was known down is ignored");
+    Observe(1, true, true);
+    Check((bool)manual.GetValue(manager), "an up observation from an earlier disconnect is ignored");
+    Observe(2, true, true);
+    Check(manager.IsBusy && !(bool)manual.GetValue(manager), "an external reconnect after the tunnel went down re-arms recovery even while busy");
+    type.GetMethod("EndBusy", flags).Invoke(manager, null);
+    // Whether the next drop is then restored is RestoreConnection's gate on the flag cleared
+    // above; exercising it would dial, so it is not probed here.
   }
 
   static string Encoded(string script) {
