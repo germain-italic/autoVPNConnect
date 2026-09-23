@@ -107,5 +107,15 @@ namespace AutoVPNConnect {
       get => settings.GetValue("ApplicationEnabled", false);
       set => settings.SetValue("ApplicationEnabled", value);
     }
+
+    /// <summary>
+    /// Allows restarting the RasMan service to recover from RAS error 633, where Windows
+    /// keeps a VPN port marked as open and every later dial fails until the service is
+    /// restarted. On by default: without it such a failure needs manual intervention.
+    /// </summary>
+    public bool FixStuckPort {
+      get => settings.GetValue("FixStuckPort", true);
+      set => settings.SetValue("FixStuckPort", value);
+    }
   }
 }

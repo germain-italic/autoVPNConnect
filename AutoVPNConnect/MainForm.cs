@@ -21,7 +21,10 @@ namespace AutoVPNConnect {
     private readonly Icon greenIcon;
     private readonly Icon redIcon;
     private readonly Icon yellowIcon;
+    private readonly ToolTip statusToolTip = new ToolTip();
     private bool showApp;
+    private bool loadingSettings;
+    private string reportedError;
 
     #region form decoration
 
@@ -150,8 +153,11 @@ namespace AutoVPNConnect {
       );
 
       mNotifyIcon.MouseDoubleClick += menuItemShowHide_Click;
+      loadingSettings = true;
       cbxAutoStart.Checked = mSettingsManager.AutoStartApp;
       cbxReconnect.Checked = mSettingsManager.Reconnect;
+      cbxFixStuckPort.Checked = mSettingsManager.FixStuckPort;
+      loadingSettings = false;
 
       var runInBackground = new UserOption("StartApplicationMinimized", false, cbxRunInBackground, settings);
       runInBackground.Changed += (_, _) => {
@@ -266,6 +272,27 @@ namespace AutoVPNConnect {
       menuItemAutoStart.Checked = mSettingsManager.AutoStartApp = cbxAutoStart.Checked;
     }
 
+    private void cbxFixStuckPort_CheckedChanged(object sender, EventArgs e) {
+      mSettingsManager.FixStuckPort = cbxFixStuckPort.Checked;
+      if (loadingSettings || !cbxFixStuckPort.Checked)
+        return;
+
+      // Register the elevated helper now, while the user is in front of the application,
+      // rather than springing a UAC prompt on them the moment a reconnect is failing.
+      if (RasManService.IsElevated || RasManService.IsTaskRegistered())
+        return;
+
+      if (RasManService.RegisterTask(out var error))
+        return;
+
+      MessageBox.Show("Restarting the RasMan service could not be set up, so error 633 will " +
+        "have to be fixed by hand.\n\n" + error, Updater.ApplicationTitle, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+      loadingSettings = true;
+      cbxFixStuckPort.Checked = false;
+      mSettingsManager.FixStuckPort = false;
+      loadingSettings = false;
+    }
+
     private void cbxReconnect_CheckedChanged(object sender, EventArgs e) {
       mSettingsManager.Reconnect = cbxReconnect.Checked;
       menuItemReconnect.Checked = cbxReconnect.Checked;
@@ -297,6 +324,7 @@ namespace AutoVPNConnect {
 
       lblConnectionStatus.Text = "Connection status: " + isConnectedText;
       lblConnectionStatus.ForeColor = isConnecting ? Theme.Current.InfoColor : isConnected ? Theme.Current.MessageColor : Theme.Current.WarnColor;
+      ShowLastError(isConnected || isConnecting ? null : mConnectionManager?.LastError);
 
       Icon = mNotifyIcon.Icon = isConnecting ? yellowIcon : isConnected ? greenIcon : redIcon;
       // TaskbarProgressHelper.SetOverlay(Icon.Handle, this.Handle, "test");
@@ -312,6 +340,30 @@ namespace AutoVPNConnect {
         textBoxUsername.Text = mSettingsManager.UserName;
       //if (!string.IsNullOrEmpty(mSettingsManager.Password))
       //  textBoxPassword.Text = mSettingsManager.Password;
+    }
+
+    /// <summary>
+    /// Surfaces why a connection attempt failed. The status label only has room for a short
+    /// line, so the full message goes to the tooltip, and a balloon announces it once - the
+    /// application usually sits minimised when a reconnect fails.
+    /// </summary>
+    private void ShowLastError(string error) {
+
+      if (string.IsNullOrEmpty(error)) {
+        reportedError = null;
+        statusToolTip.SetToolTip(lblConnectionStatus, string.Empty);
+        return;
+      }
+
+      statusToolTip.SetToolTip(lblConnectionStatus, error);
+      lblConnectionStatus.Text += Environment.NewLine + (error.Length > 52 ? error.Substring(0, 51) + "…" : error);
+
+      if (error == reportedError)
+        return; // already announced, do not nag on every network change
+      reportedError = error;
+      mNotifyIcon.BalloonTipTitle = Updater.ApplicationTitle;
+      mNotifyIcon.BalloonTipText = error;
+      mNotifyIcon.ShowBalloonTip(5000);
     }
 
     private void menuReconnect_Click(object sender, EventArgs e) {

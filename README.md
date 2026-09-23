@@ -13,10 +13,31 @@ AutoVPNConnect - is free software that can auto reconnect your VPN if it was dis
 
  - Reconnect with saved user/password (by rasdial command).
  - Reconnect without saved user/password by rasphone command (The VPN connection dialog box will be displayed.)
+ - Recover from RAS error 633 (`the specified port is already open`) by restarting the RasMan service, see below.
  - Runs as background application with tray icon.
  - `Light` / `Dark` themes with `Auto` mode to switch when changing system settings
  - No installation required, just save the executable file anywhere on your computer and run it.
  
+
+### Fix stuck VPN port (RAS error 633)
+
+After a VPN session drops, Windows sometimes keeps the WAN Miniport port marked as in use.
+Every later dial then fails with `Error 633: The port is already open`, and no amount of
+retrying helps - the RasMan service has to be restarted before the port is released. Left
+alone, this silently defeats auto reconnect until someone notices and fixes it by hand.
+
+With **Fix stuck VPN port** enabled (the default), a dial that fails with 633 restarts
+RasMan and retries once. Restarting a service needs administrator rights, so the first time
+you enable the option the application registers a scheduled task, `AutoVPNConnect\RestartRasMan`,
+that performs the restart. That is the only UAC prompt: the task is triggered silently
+afterwards, which is what keeps unattended reconnects working while the app sits in the tray.
+If the application already runs elevated, no task is created and the service is restarted directly.
+
+To undo it, untick the option and delete the task:
+
+```
+schtasks /Delete /TN "AutoVPNConnect\RestartRasMan" /F
+```
 
 ### UI example 
 

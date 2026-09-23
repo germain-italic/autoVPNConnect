@@ -26,6 +26,7 @@
       this.components = new System.ComponentModel.Container();
       this.lblConnectsTo = new System.Windows.Forms.Label();
       this.cbxRunInBackground = new System.Windows.Forms.CheckBox();
+      this.cbxFixStuckPort = new System.Windows.Forms.CheckBox();
       this.cbxReconnect = new System.Windows.Forms.CheckBox();
       this.cbxAutoStart = new System.Windows.Forms.CheckBox();
       this.btnSaveSettings = new System.Windows.Forms.Button();
@@ -58,9 +59,21 @@
       this.cbxRunInBackground.TabIndex = 11;
       this.cbxRunInBackground.Text = "Run in background";
       this.cbxRunInBackground.UseVisualStyleBackColor = true;
-      // 
+      //
+      // cbxFixStuckPort
+      //
+      this.cbxFixStuckPort.AutoSize = true;
+      this.cbxFixStuckPort.Location = new System.Drawing.Point(14, 205);
+      this.cbxFixStuckPort.Margin = new System.Windows.Forms.Padding(2);
+      this.cbxFixStuckPort.Name = "cbxFixStuckPort";
+      this.cbxFixStuckPort.Size = new System.Drawing.Size(118, 17);
+      this.cbxFixStuckPort.TabIndex = 12;
+      this.cbxFixStuckPort.Text = "Fix stuck VPN port";
+      this.cbxFixStuckPort.UseVisualStyleBackColor = true;
+      this.cbxFixStuckPort.CheckedChanged += new System.EventHandler(this.cbxFixStuckPort_CheckedChanged);
+      //
       // cbxReconnect
-      // 
+      //
       this.cbxReconnect.AutoSize = true;
       this.cbxReconnect.Location = new System.Drawing.Point(14, 163);
       this.cbxReconnect.Margin = new System.Windows.Forms.Padding(2);
@@ -167,7 +180,8 @@
       // 
       this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
       this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-      this.ClientSize = new System.Drawing.Size(308, 212);
+      this.ClientSize = new System.Drawing.Size(308, 233);
+      this.Controls.Add(this.cbxFixStuckPort);
       this.Controls.Add(this.cbxRunInBackground);
       this.Controls.Add(this.btnSaveSettings);
       this.Controls.Add(this.lblConnectionStatus);
@@ -205,6 +219,7 @@
     private System.Windows.Forms.CheckBox cbxReconnect;
     private System.Windows.Forms.Button btnSaveSettings;
     private System.Windows.Forms.CheckBox cbxRunInBackground;
+    private System.Windows.Forms.CheckBox cbxFixStuckPort;
     private System.Windows.Forms.Button btnToggle;
   }
 }
