@@ -30,6 +30,12 @@ With **Fix stuck VPN port** enabled (the default), a dial that fails with 633 fi
 the session left over from the dropped connection and retries; if the port is still held, it
 restarts RasMan and retries once more.
 
+This recovery applies to connections dialed through the RAS API with usable saved
+credentials. When credentials are unavailable, the application opens the Windows
+`rasphone` connection dialog; it cannot apply this recovery to errors inside that dialog.
+Restarting RasMan affects the whole machine and can disconnect other active VPN or
+dial-up connections, not just the configured VPN.
+
 Restarting a service needs administrator rights, so the application registers a scheduled
 task, `AutoVPNConnect\RestartRasMan`, that performs the restart. It is registered the first
 time you open the main window (or when you tick the option), never in the background while a
@@ -76,6 +82,32 @@ You can check if it works properly on your PC. If you notice any inaccuracies, p
 If you have any suggestions or improvements, don't hesitate to create an issue.
 
 Also, don't forget to star the repository to help other people find it.
+
+### Building and validating changes
+
+On Windows, with a .NET SDK and the .NET Framework 4.7.2 targeting pack:
+
+```powershell
+dotnet build -c Release
+```
+
+A successful build currently does not establish that the application can run. The
+published `SergiyE.Common` dependency used by this source has methods that throw
+`NotImplementedException`, including the first library call at startup. The executable
+also showed an earlier startup failure with Costura enabled. Reproduction details and
+the request for usable dependencies are tracked in
+[upstream issue #2](https://github.com/sergiye/autoVPNConnect/issues/2).
+
+The error 633 mechanisms can be checked independently of those dependencies:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/RecoveryChecks/Run.ps1
+```
+
+See [the recovery checks](tests/RecoveryChecks/README.md) for prerequisites, coverage and
+limits. These checks use an invalid RAS handle, simulated service commands and temporary
+tasks with harmless actions. They never restart RasMan or run the application's recovery
+task. Passing them verifies isolated mechanisms, not a complete VPN reconnection or the UI.
 
 ## Donate!
 Every [cup of coffee](https://patreon.com/SergiyE) you donate will help this app become better and let me know that this project is in demand.

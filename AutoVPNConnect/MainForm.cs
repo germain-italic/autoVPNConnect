@@ -113,6 +113,12 @@ namespace AutoVPNConnect {
       settings = new PersistentSettings();
       settings.Load();
       mSettingsManager = new SettingsManager(settings);
+      // Load editable fields once: status notifications must not overwrite unsaved input.
+      if (mSettingsManager.IsConnectionConfigured) {
+        cmbConnections.Items.Add(mSettingsManager.VpnConnectionName);
+        cmbConnections.SelectedIndex = 0;
+      }
+      textBoxUsername.Text = mSettingsManager.UserName;
       mConnectionManager = new ConnectionManager(ref mSettingsManager);
       mConnectionManager.OnStatusChanged += UpdateUI;
 
@@ -366,11 +372,6 @@ namespace AutoVPNConnect {
       btnToggle.Text = menuItemConnect.Text = isConnected ? "Disconnect" : "Connect";
       btnToggle.Enabled = menuItemConnect.Enabled = !connectionName.IsNullOrEmpty() && !isConnecting;
 
-      if (!string.IsNullOrEmpty(connectionName)) {
-        cmbConnections.Items.Add(connectionName);
-        cmbConnections.SelectedIndex = 0;
-      }
-
       lblConnectionStatus.Text = "Connection status: " + isConnectedText;
       lblConnectionStatus.ForeColor = isConnecting ? Theme.Current.InfoColor : isConnected ? Theme.Current.MessageColor : Theme.Current.WarnColor;
       if (isConnected)
@@ -389,10 +390,6 @@ namespace AutoVPNConnect {
       //mNotifyIcon.BalloonTipText = $"{Updater.ApplicationTitle} runs in background";
       //mNotifyIcon.ShowBalloonTip(1000);
 
-      if (!string.IsNullOrEmpty(mSettingsManager?.UserName))
-        textBoxUsername.Text = mSettingsManager.UserName;
-      //if (!string.IsNullOrEmpty(mSettingsManager.Password))
-      //  textBoxPassword.Text = mSettingsManager.Password;
     }
 
     /// <summary>
