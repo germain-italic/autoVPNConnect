@@ -16,11 +16,15 @@ independently of the original project.
 
  - Reconnect with saved user/password, through the Windows RAS API.
  - Reconnect without saved user/password by rasphone command (The VPN connection dialog box will be displayed.)
+ - Disconnect on purpose: *Force disconnect* in the tray, or *Disconnect* in the window,
+   holds until you connect again, even with *Restore lost connection* ticked.
  - Retry a failed reconnect on its own, with increasing delays, see below.
  - Detect a VPN that reads as connected but carries no traffic, by pinging a host behind it.
  - Tray notifications when the VPN drops, comes back or fails to reconnect.
  - Connection history in a standard JSON Lines log.
  - Recover from RAS error 633 (`the specified port is already open`) by restarting the RasMan service, see below.
+ - Saved password protected with Windows DPAPI, tied to your user account.
+ - *Check for updates* offers new releases of this fork; nothing installs without asking.
  - Runs as background application with tray icon.
  - `Light` / `Dark` themes with `Auto` mode to switch when changing system settings
  - No installation required, just save the executable file anywhere on your computer and run it.
@@ -141,11 +145,12 @@ Behaviour:
    stops the retries. Retries never open the `rasphone` dialog: without saved credentials
    they stop, which the log records once, until the VPN connects or the settings are saved.
  - **Tunnel health**, option *Check that the VPN carries traffic*: pings the host you enter
-   every 30 s while connected. Pick a host that answers only through the VPN, such as an
-   internal server; *Test* checks it, and warns when it also answers with the VPN down.
-   After three missed pings the VPN is reconnected if *Restore lost connection* is ticked,
-   otherwise you are notified once, until the host answers again. If the host still does not answer after one reconnect,
-   the app stops reconnecting for it and says so, until the host answers again.
+   in *Ping host* every 30 s while connected. Pick a host that answers only through the VPN,
+   such as an internal server; *Test* checks it, and warns when it also answers with the VPN
+   down. After three missed pings the VPN is reconnected if *Restore lost connection* is
+   ticked, otherwise you are notified once. If the host still does not answer after one
+   reconnect, the app stops reconnecting for it and says so. Either way, the check acts
+   again once the host answers.
  - **Notifications**, option *Show notifications*: tray balloons for a drop, the connection
    coming back (with the outage duration), a failed reconnect and an unresponsive tunnel.
    They need *Run in background*, which shows the tray icon they belong to.
