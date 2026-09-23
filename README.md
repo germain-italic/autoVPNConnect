@@ -44,8 +44,8 @@ and *Check for updates* entries point to this fork, not to the original project.
 
 ## Why this fork
 
-The original project, as published, does not build into a working program. Its source is
-public; the library it depends on is not.
+As published, the original project does not build into a working program: the library it
+needs resolves to a stub, and that library's declared source repository returns 404.
 
  - **The dependency is withheld.** `SergiyE.Common` and `SergiyE.Common.UI` are the author's
    own NuGet packages. The current version, 1.0.9745, is published as a stub: 470 methods of
