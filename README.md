@@ -35,9 +35,8 @@ task, `AutoVPNConnect\RestartRasMan`, that performs the restart. It is registere
 time you open the main window (or when you tick the option), never in the background while a
 reconnect is failing - that is the only UAC prompt, and the task is triggered silently
 afterwards, which is what keeps unattended reconnects working while the app sits in the tray.
-The task writes `%ProgramData%\AutoVPNConnect\rasman-restart.stamp` on success, because
-`schtasks /Run` only reports that the task was queued and a restart that never ran would
-otherwise look like a successful one.
+Because `schtasks /Run` only reports that the task was queued, the outcome is read back from
+the Task Scheduler itself - a restart that never ran would otherwise pass for a successful one.
 
 If the application already runs elevated, no task is created and the service is restarted
 directly, stopping and restoring any dependent services.

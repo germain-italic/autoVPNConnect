@@ -111,8 +111,12 @@ namespace AutoVPNConnect {
 
     public bool VpnIsConnected() {
       var vpnConnectionName = mSettingsManager.VpnConnectionName;
-      return GetActiveVpnConnections(vpnConnectionName).Any();
-      //todo: hRasConn = IntPtr.Zero;
+      var active = GetActiveVpnConnections(vpnConnectionName);
+      // Match the configured connection rather than any PPP adapter that happens to be up:
+      // an unrelated VPN would otherwise read as "connected" and hide our own failures.
+      return string.IsNullOrEmpty(vpnConnectionName)
+        ? active.Any()
+        : active.Any(ni => ni.Name == vpnConnectionName);
     }
 
     public void ToggleConnection() {
@@ -205,7 +209,10 @@ namespace AutoVPNConnect {
           }
           throw new TimeoutException("The dial command did not finish within 60 seconds.");
         }
-        stdout?.Wait(); // the process has exited, so the reader completes
+        // Bounded: WaitForExit(int) does not close the redirected pipes, and a process that
+        // passed the handle on - rasphone launching the dialer - keeps the write end open
+        // after exiting. An unbounded wait here would strand the dial slot for good.
+        stdout?.Wait(5000);
         return process.ExitCode;
       }
     }

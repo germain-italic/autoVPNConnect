@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -6,6 +7,7 @@ using System.Security.Principal;
 using System.ServiceProcess;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace AutoVPNConnect {
 
@@ -23,27 +25,16 @@ namespace AutoVPNConnect {
     public const uint ErrorPortAlreadyOpen = 633;
 
     private const string ServiceName = "RasMan";
-    private const string TaskName = "AutoVPNConnect\\RestartRasMan";
+    private const string TaskFolder = "AutoVPNConnect";
+    private const string TaskLeafName = "RestartRasMan";
+    private const string TaskName = TaskFolder + "\\" + TaskLeafName;
+    private const int TaskStateQueued = 2;
+    private const int TaskStateRunning = 4;
     private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(45);
     // Matches the task's own ExecutionTimeLimit: giving up sooner would report a failure for
     // a restart that is still running and about to succeed.
-    private static readonly TimeSpan StampTimeout = TimeSpan.FromMinutes(2);
-
-    /// <summary>
-    /// The task writes this stamp after a successful restart. schtasks /Run only reports that
-    /// the task was queued, so the stamp is the only trustworthy evidence that the restart
-    /// actually ran - without it a task that fails to start looks like a success and the dial
-    /// is retried for nothing. It lives under ProgramData so that the task (running as SYSTEM)
-    /// can write it while the application (running as the user) can still read it.
-    /// </summary>
-    private static string StampPath {
-      get {
-        var dir = Path.Combine(
-          Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "AutoVPNConnect");
-        return Path.Combine(dir, "rasman-restart.stamp");
-      }
-    }
+    private static readonly TimeSpan TaskTimeout = TimeSpan.FromMinutes(2);
 
     public static bool IsElevated {
       get {
@@ -123,24 +114,25 @@ namespace AutoVPNConnect {
 
         if (!IsTaskRegistered()) {
           if (!allowRegistration) {
+            // Not "tick the box": the setting defaults to on, so it is already ticked and
+            // toggling it is not what registers the task - opening the window is.
             error = "The helper that restarts the RasMan service is not set up yet. " +
-              "Open the main window and tick 'Fix stuck VPN port' to allow it.";
+              "Open the main window to finish the one-time setup.";
             return false;
           }
           if (!RegisterTask(out error))
             return false;
         }
 
-        var triggeredAt = DateTime.UtcNow;
+        // A couple of seconds of slack: LastRunTime comes from the scheduler's clock.
+        var triggeredAt = DateTime.Now.AddSeconds(-2);
         if (!RunSchTasks("/Run /TN \"" + TaskName + "\"", false, out var output)) {
           error = string.IsNullOrEmpty(output) ? "Could not start the RasMan recovery task." : output;
           return false;
         }
 
-        if (!WaitForStamp(triggeredAt)) {
-          error = "The RasMan recovery task did not report a successful restart.";
+        if (!WaitForTaskCompletion(triggeredAt, out error))
           return false;
-        }
 
         SettleAfterRestart();
         return true;
@@ -158,16 +150,17 @@ namespace AutoVPNConnect {
     private static void RestartDirectly() {
       using (var service = new ServiceController(ServiceName)) {
 
-        var dependents = service.DependentServices
-          .Where(d => d.Status != ServiceControllerStatus.Stopped)
-          .ToArray();
-
-        foreach (var dependent in dependents) {
-          dependent.Stop();
-          dependent.WaitForStatus(ServiceControllerStatus.Stopped, StopTimeout);
-        }
-
+        // Only the ones we actually stopped are restored, and the loop is inside the try so a
+        // dependent that refuses to stop cannot leave the ones before it down until reboot.
+        var stopped = new List<ServiceController>();
         try {
+          foreach (var dependent in service.DependentServices
+                     .Where(d => d.Status != ServiceControllerStatus.Stopped)) {
+            dependent.Stop();
+            stopped.Add(dependent);
+            dependent.WaitForStatus(ServiceControllerStatus.Stopped, StopTimeout);
+          }
+
           if (service.Status != ServiceControllerStatus.Stopped) {
             service.Stop();
             service.WaitForStatus(ServiceControllerStatus.Stopped, StopTimeout);
@@ -178,10 +171,10 @@ namespace AutoVPNConnect {
         finally {
           // Whatever happened to RasMan, services we stopped ourselves must not be left down
           // until the next reboot.
-          foreach (var dependent in dependents) {
+          foreach (var dependent in stopped) {
             try {
               dependent.Start();
-              dependent.WaitForStatus(ServiceControllerStatus.Running, StopTimeout);
+              dependent.WaitForStatus(ServiceControllerStatus.Running, StartTimeout);
             }
             catch {
               // best effort: a dependent that refuses to come back must not fail the recovery
@@ -192,20 +185,48 @@ namespace AutoVPNConnect {
       SettleAfterRestart();
     }
 
-    private static bool WaitForStamp(DateTime triggeredAt) {
-      var path = StampPath;
-      var deadline = DateTime.UtcNow + StampTimeout;
-      while (DateTime.UtcNow < deadline) {
-        try {
-          if (File.Exists(path) && File.GetLastWriteTimeUtc(path) >= triggeredAt)
-            return true;
+    /// <summary>
+    /// schtasks /Run only reports that the task was queued, so a restart that never ran would
+    /// otherwise pass for a success. The scheduler itself is asked for the outcome: no file is
+    /// written anywhere, which keeps a SYSTEM-owned write out of a directory that a standard
+    /// user can pre-create, and no schtasks output has to be parsed in the user's language.
+    /// </summary>
+    private static bool WaitForTaskCompletion(DateTime triggeredAt, out string error) {
+      error = null;
+      try {
+        var type = Type.GetTypeFromProgID("Schedule.Service");
+        if (type == null) {
+          error = "The Task Scheduler service is not available.";
+          return false;
         }
-        catch {
-          //ignore, the task may be writing it right now
+
+        dynamic scheduler = Activator.CreateInstance(type);
+        scheduler.Connect();
+        dynamic task = scheduler.GetFolder("\\" + TaskFolder).GetTask(TaskLeafName);
+
+        var deadline = DateTime.UtcNow + TaskTimeout;
+        while (DateTime.UtcNow < deadline) {
+          int state = task.State;
+          if (state != TaskStateRunning && state != TaskStateQueued) {
+            DateTime lastRun = task.LastRunTime;
+            if (lastRun >= triggeredAt) {
+              int result = task.LastTaskResult;
+              if (result == 0)
+                return true;
+              error = "The RasMan recovery task failed with code " + result + ".";
+              return false;
+            }
+          }
+          Thread.Sleep(500);
         }
-        Thread.Sleep(500);
+
+        error = "The RasMan recovery task did not finish in time.";
+        return false;
       }
-      return false;
+      catch (Exception ex) {
+        error = "Could not read the result of the RasMan recovery task: " + ex.Message;
+        return false;
+      }
     }
 
     /// <summary>RasMan reports Running before its ports are usable again.</summary>
@@ -240,20 +261,25 @@ namespace AutoVPNConnect {
           var stdout = elevated ? null : process.StandardOutput.ReadToEndAsync();
           var stderr = elevated ? null : process.StandardError.ReadToEndAsync();
 
-          if (!process.WaitForExit(60000)) {
+          // The elevated call waits on a UAC prompt, which is the user's own pace.
+          if (!process.WaitForExit(elevated ? 300000 : 60000)) {
             try {
               process.Kill();
               process.WaitForExit(5000);
             }
             catch {
-              //ignore
+              //ignore, an elevated child cannot be killed from here anyway
             }
             output = "schtasks did not finish in time.";
             return false;
           }
 
-          if (!elevated)
-            output = (stdout.Result + stderr.Result).Trim();
+          if (!elevated) {
+            // Bounded: WaitForExit(int) does not close the redirected pipes, and a process
+            // that passed a handle on keeps the write end open after exiting.
+            Task.WaitAll(new Task[] { stdout, stderr }, 5000);
+            output = (Text(stdout) + Text(stderr)).Trim();
+          }
           return process.ExitCode == 0;
         }
       }
@@ -270,6 +296,10 @@ namespace AutoVPNConnect {
       }
     }
 
+    private static string Text(Task<string> reader) {
+      return reader != null && reader.Status == TaskStatus.RanToCompletion ? reader.Result : string.Empty;
+    }
+
     private static string BuildTaskXml() {
       // Grant the current user the right to start the task, so triggering it later needs no
       // elevation. Without this, only an administrator could run it.
@@ -284,9 +314,8 @@ namespace AutoVPNConnect {
         //ignore
       }
 
-      // -ErrorAction Stop keeps the stamp from being written when the restart itself fails,
-      // which is what lets the caller tell a real restart from a task that merely started.
-      var stamp = StampPath.Replace("'", "''");
+      // -ErrorAction Stop makes a failed restart a non-zero exit code, which is what the
+      // caller reads back as the task's LastTaskResult.
       // Restart-Service -Force stops dependent services so the stop can proceed, but starts
       // only RasMan again - so they are noted first and put back afterwards, matching what
       // the elevated in-process path does.
@@ -294,10 +323,7 @@ namespace AutoVPNConnect {
         "$ErrorActionPreference = 'Stop'; " +
         "$deps = @((Get-Service -Name RasMan).DependentServices | Where-Object { $_.Status -ne 'Stopped' }); " +
         "Restart-Service -Name RasMan -Force; " +
-        "foreach ($d in $deps) { try { Start-Service -Name $d.Name } catch { } }; " +
-        "$p = '" + stamp + "'; " +
-        "New-Item -ItemType Directory -Force -Path (Split-Path $p) | Out-Null; " +
-        "Set-Content -Path $p -Value ([DateTime]::UtcNow.ToString('o'))";
+        "foreach ($d in $deps) { try { Start-Service -Name $d.Name } catch { } }";
 
       return
         "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n" +

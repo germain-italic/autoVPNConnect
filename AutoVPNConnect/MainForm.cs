@@ -316,6 +316,11 @@ namespace AutoVPNConnect {
       if (RasManService.RegisterTask(out var error))
         return;
 
+      // The elevated schtasks can still have succeeded after we stopped waiting on it, so
+      // check before telling the user it failed and turning the feature off under them.
+      if (RasManService.IsTaskRegistered())
+        return;
+
       MessageBox.Show("Restarting the RasMan service could not be set up, so error 633 will " +
         "have to be fixed by hand.\n\n" + error, Updater.ApplicationTitle, MessageBoxButtons.OK, MessageBoxIcon.Warning);
       loadingSettings = true;
