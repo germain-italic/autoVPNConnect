@@ -1,9 +1,12 @@
 # Auto VPN Connect
-[![Release](https://img.shields.io/github/v/release/sergiye/AutoVPNConnect)](https://github.com/sergiye/AutoVPNConnect/releases/latest)
-![Downloads](https://img.shields.io/github/downloads/sergiye/AutoVPNConnect/total?color=ff4f42)
-![Last commit](https://img.shields.io/github/last-commit/sergiye/AutoVPNConnect?color=00AD00)
+[![Release](https://img.shields.io/github/v/release/germain-italic/autoVPNConnect)](https://github.com/germain-italic/autoVPNConnect/releases/latest)
+![Last commit](https://img.shields.io/github/last-commit/germain-italic/autoVPNConnect?color=00AD00)
 
-AutoVPNConnect - is free software that can auto reconnect your VPN if it was disconnected.
+AutoVPNConnect is free software that reconnects your VPN automatically when it drops.
+
+This repository is a fork of [sergiye/autoVPNConnect](https://github.com/sergiye/autoVPNConnect)
+by Sergiy Egoshyn, maintained by [germain-italic](https://github.com/germain-italic)
+independently of the original project.
 
 ----
 
@@ -62,26 +65,63 @@ schtasks /Delete /TN "AutoVPNConnect\RestartRasMan" /F
 
 Main app window:
 
-[<img src="https://github.com/sergiye/AutoVPNConnect/raw/master/preview.png" alt="Preview" width="300"/>](https://raw.githubusercontent.com/sergiye/AutoVPNConnect/master/preview.png)
+[<img src="preview.png" alt="Preview" width="300"/>](preview.png)
 
 Extended app system menu:
 
-[<img src="https://github.com/sergiye/AutoVPNConnect/raw/master/sysMenu.png" alt="Preview" width="300"/>](https://raw.githubusercontent.com/sergiye/AutoVPNConnect/master/sysMenu.png)
+[<img src="sysMenu.png" alt="Preview" width="300"/>](sysMenu.png)
 
 System tray integration with menu:
 
-[<img src="https://github.com/sergiye/AutoVPNConnect/raw/master/sysTray.png" alt="Preview" width="300"/>](https://raw.githubusercontent.com/sergiye/AutoVPNConnect/master/sysTray.png)
+[<img src="sysTray.png" alt="Preview" width="300"/>](sysTray.png)
 
 ## Download
 
-The published version can be obtained from [releases](https://github.com/sergiye/AutoVPNConnect/releases).
+Builds of this fork are published on its
+[releases](https://github.com/germain-italic/autoVPNConnect/releases) page. The in-app *Site*
+and *Check for updates* entries point to this fork, not to the original project.
 
-## How can I help improve it?
-The AutoVPNConnect team welcomes feedback and contributions!<br/>
-You can check if it works properly on your PC. If you notice any inaccuracies, please send us a pull request. 
-If you have any suggestions or improvements, don't hesitate to create an issue.
+## Why this fork
 
-Also, don't forget to star the repository to help other people find it.
+The original source builds, but the resulting executable cannot start. Two separate causes:
+
+ - `SergiyE.Common` and `SergiyE.Common.UI`, the original author's NuGet packages, resolve to
+   version 1.0.9745, which is published as a stub: 470 methods of `SergiyE.Common` throw
+   `NotImplementedException`, including the first one called at startup.
+ - `Costura.Fody` 4.1.0, when the project is built with `dotnet build`, weaves references to
+   .NET 8 (`System.Private.CoreLib 8.0`) into an executable that runs on .NET Framework 4.7.2.
+   It fails before `Main` with a `FileNotFoundException`.
+
+The first problem was reported upstream in
+[issue #2](https://github.com/sergiye/autoVPNConnect/issues/2). It was closed as not planned,
+with this reply from the maintainer:
+
+> Your AI wasted my time having me read a long generated report that asked me to spend even
+> more time modifying the project just to make it easier for the AI to work with.
+> Don't do that.
+> If you have complaints about how the program is working, describe them yourself.
+> Clearly and concisely.
+> Respect other people's time.
+
+Changes made in this fork are therefore not offered upstream.
+
+## What this fork changes
+
+ - **Runs again.** Both packages are pinned to 1.0.9500, the last version with real method
+   bodies, and `Costura.Fody` is upgraded to 5.7.0. The OS compatibility check, absent from
+   1.0.9500, is dropped.
+ - **TLS validation restored.** The updater in `SergiyE.Common` installs a process-wide
+   certificate callback that accepts any certificate, then downloads and runs a replacement
+   executable. The callback is removed at startup.
+ - **RAS error 633 recovery**, described above.
+ - **Settings fields load once**, so a network change no longer duplicates the VPN entry or
+   overwrites a user name being typed.
+ - **Links, update check and About box** point to this fork.
+
+## Contributing
+
+Issues and pull requests are welcome on
+[this fork](https://github.com/germain-italic/autoVPNConnect/issues).
 
 ### Building and validating changes
 
@@ -91,14 +131,10 @@ On Windows, with a .NET SDK and the .NET Framework 4.7.2 targeting pack:
 dotnet build -c Release
 ```
 
-A successful build currently does not establish that the application can run. The
-published `SergiyE.Common` dependency used by this source has methods that throw
-`NotImplementedException`, including the first library call at startup. The executable
-also showed an earlier startup failure with Costura enabled. Reproduction details and
-the request for usable dependencies are tracked in
-[upstream issue #2](https://github.com/sergiye/autoVPNConnect/issues/2).
+The executable is written to `AutoVPNConnect/bin/`. `make.bat` builds through Visual Studio's
+MSBuild instead, when Visual Studio is installed.
 
-The error 633 mechanisms can be checked independently of those dependencies:
+The error 633 mechanisms can be checked on their own:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/RecoveryChecks/Run.ps1
@@ -109,5 +145,11 @@ limits. These checks use an invalid RAS handle, simulated service commands and t
 tasks with harmless actions. They never restart RasMan or run the application's recovery
 task. Passing them verifies isolated mechanisms, not a complete VPN reconnection or the UI.
 
-## Donate!
-Every [cup of coffee](https://patreon.com/SergiyE) you donate will help this app become better and let me know that this project is in demand.
+## License
+
+The original code carries no license. It remains Copyright © 2014 Sergiy Egoshyn, all rights
+reserved, and is published here under GitHub's terms of service, which allow viewing and
+forking it on GitHub.
+
+Changes made in this fork are licensed under the GNU General Public License v3.0, the
+license of the `SergiyE.Common` packages embedded in the executable. See [LICENSE](LICENSE).

@@ -3,9 +3,9 @@ using System.Runtime.InteropServices;
 
 [assembly: AssemblyTitle("Auto VPN Connect")]
 [assembly: AssemblyDescription("Tool for automatically reconnecting to the selected VPN connection")]
-[assembly: AssemblyCompany("SergiyE")]
+[assembly: AssemblyCompany("germain-italic")]
 [assembly: AssemblyProduct("AutoVPNConnect")]
-[assembly: AssemblyCopyright("Copyright © 2014 Sergiy Egoshyn")]
+[assembly: AssemblyCopyright("Copyright © 2014 Sergiy Egoshyn; fork changes © 2026 Germain Italic")]
 
 [assembly: ComVisible(false)]
 

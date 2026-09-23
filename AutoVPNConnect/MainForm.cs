@@ -61,7 +61,7 @@ namespace AutoVPNConnect {
       if (m.Msg == WinApiHelper.WM_SYS_COMMAND) {
         switch ((int)m.WParam) {
           case SysMenuAboutId:
-            Updater.ShowAbout();
+            ShowAbout();
             break;
           case SysMenuCheckUpdates:
             Updater.CheckForUpdates(Updater.CheckUpdatesMode.AllMessages);
@@ -84,6 +84,18 @@ namespace AutoVPNConnect {
       settings.SetValue("AlwaysOnTop", TopMost);
       var hSysMenu = WinApiHelper.GetSystemMenu(Handle, false);
       WinApiHelper.CheckMenuItem(hSysMenu, SysMenuTopMost, TopMost ? WinApiHelper.MF_CHECKED : WinApiHelper.MF_UNCHECKED);
+    }
+
+    // Replaces Updater.ShowAbout, whose text is hardcoded in the library and names the
+    // original author only. The original copyright stays: this is a fork of his work.
+    private static void ShowAbout() {
+      var assembly = Assembly.GetExecutingAssembly();
+      var copyright = assembly.GetCustomAttribute<AssemblyCopyrightAttribute>()?.Copyright;
+      MessageBox.Show(
+        $"{Updater.ApplicationTitle} {assembly.GetName().Version} {(Environment.Is64BitProcess ? "x64" : "x86")}\n\n" +
+        "Fork maintained by germain-italic\nhttps://github.com/germain-italic/autoVPNConnect\n\n" +
+        "Based on AutoVPNConnect by Sergiy Egoshyn.\n" + copyright,
+        Updater.ApplicationTitle, MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private static bool DoSnap(int pos, int edge) {
@@ -153,7 +165,7 @@ namespace AutoVPNConnect {
           new ToolStripSeparator(),
           new ToolStripMenuItem("Site", null, (_, _) => Updater.VisitAppSite()),
           new ToolStripMenuItem("Check for updates", null, (_, _) => Updater.CheckForUpdates(Updater.CheckUpdatesMode.AllMessages)),
-          new ToolStripMenuItem("About…", null, (_, _) => Updater.ShowAbout()),
+          new ToolStripMenuItem("About…", null, (_, _) => ShowAbout()),
           new ToolStripSeparator(),
           new ToolStripMenuItem("Exit", null, toolStripMenuItemExit_Click)
         }
