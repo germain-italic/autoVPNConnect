@@ -24,7 +24,7 @@ namespace AutoVPNConnect {
     private const int RAS_MaxCallbackNumber = RAS_MaxPhoneNumber;
 
     private IntPtr hRasConn = IntPtr.Zero;
-    private bool isBusy;
+    private int busyFlag;
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
     struct RASDIALPARAMS {
@@ -73,12 +73,24 @@ namespace AutoVPNConnect {
       OnStatusChanged?.Invoke();
     }
 
-    public bool IsBusy {
-      get => isBusy;
-      private set {
-        isBusy = value;
-        OnStatusChanged?.Invoke();
-      }
+    public bool IsBusy => Volatile.Read(ref busyFlag) != 0;
+
+    /// <summary>
+    /// Claims the single dial slot. Network change notifications are dispatched to the thread
+    /// pool now, so a burst of them can run several attempts at once; two concurrent dials
+    /// collide on the same port, which yields a self-inflicted 633 and, worse, a machine-wide
+    /// service restart to "fix" it. A plain bool check-then-set does not prevent that.
+    /// </summary>
+    private bool TryBeginBusy() {
+      if (Interlocked.CompareExchange(ref busyFlag, 1, 0) != 0)
+        return false;
+      OnStatusChanged?.Invoke();
+      return true;
+    }
+
+    private void EndBusy() {
+      Volatile.Write(ref busyFlag, 0);
+      OnStatusChanged?.Invoke();
     }
 
     public static IEnumerable<NetworkInterface> GetActiveVpnConnections(string connectionName = null) {
@@ -145,10 +157,17 @@ namespace AutoVPNConnect {
     private bool ReleaseStaleHandle() {
       if (hRasConn == IntPtr.Zero)
         return false;
-      RasHangUp(hRasConn);
-      hRasConn = IntPtr.Zero;
+      HangUpStaleHandle();
       Thread.Sleep(HangUpSettleMs); // RasHangUp returns before the port is actually free
       return true;
+    }
+
+    /// <summary>Same, without the settle delay, for when no retry follows.</summary>
+    private void HangUpStaleHandle() {
+      if (hRasConn == IntPtr.Zero)
+        return;
+      RasHangUp(hRasConn);
+      hRasConn = IntPtr.Zero;
     }
 
     /// <summary>
@@ -163,9 +182,12 @@ namespace AutoVPNConnect {
       if (!mSettingsManager.FixStuckPort)
         return portError + " Enable 'Fix stuck VPN port' in the settings to restart the RasMan service automatically.";
 
-      return RasManService.TryRestart(out var restartError)
+      // allowRegistration: false - we are on a background thread with no window to own a UAC
+      // prompt. If the helper task is missing, say so instead of raising one behind the user's
+      // back; opening the main window registers it.
+      return RasManService.TryRestart(false, out var restartError)
         ? null
-        : portError + " Restarting the RasMan service failed: " + restartError;
+        : portError + " " + restartError;
     }
 
     private static int RunDialProcess(ProcessStartInfo startInfo) {
@@ -183,16 +205,15 @@ namespace AutoVPNConnect {
           }
           throw new TimeoutException("The dial command did not finish within 60 seconds.");
         }
-        stdout?.Wait(1000);
+        stdout?.Wait(); // the process has exited, so the reader completes
         return process.ExitCode;
       }
     }
 
     private string DisconnectFromVpn() {
-      if (IsBusy) {
+      if (!TryBeginBusy()) {
         return BusyResult;
       }
-      IsBusy = true;
       try {
         if (hRasConn != IntPtr.Zero) {
           uint ret = RasHangUp(hRasConn);
@@ -218,17 +239,16 @@ namespace AutoVPNConnect {
         return ex.Message;
       }
       finally {
-        IsBusy = false;
+        EndBusy();
       }
     }
 
     private string ConnectToVpn() {
-      if (IsBusy) return BusyResult;
+      // Clear it up front: claiming the slot fires UpdateUI before this method returns, and a
+      // stale error showing during a fresh attempt is worse than no error at all.
+      LastError = null;
+      if (!TryBeginBusy()) return BusyResult;
       try {
-        // Clear it up front: IsBusy fires UpdateUI before this method returns, and a stale
-        // error showing during a fresh attempt is worse than no error at all.
-        LastError = null;
-        IsBusy = true;
         var vpnName = mSettingsManager.VpnConnectionName;
         var userName = mSettingsManager.UserName;
         var password = mSettingsManager.Password;
@@ -249,8 +269,15 @@ namespace AutoVPNConnect {
         if (hasPassword && !string.IsNullOrEmpty(dialParams.szUserName)) {
           mSettingsManager.UserName = dialParams.szUserName;
           mSettingsManager.Password = dialParams.szPassword;
-          var conn = IntPtr.Zero;
-          uint Dial() => RasDial(IntPtr.Zero, null, ref dialParams, 0, IntPtr.Zero, out conn);
+          // RasDial hands back a usable handle even when it fails, and that half-open session
+          // is itself a reason the port stays busy. Adopting it here is what lets the cheap
+          // remedy below work on the very first dial after the application starts.
+          uint Dial() {
+            var code = RasDial(IntPtr.Zero, null, ref dialParams, 0, IntPtr.Zero, out var handle);
+            if (handle != IntPtr.Zero)
+              hRasConn = handle;
+            return code;
+          }
 
           var ret = Dial();
           // Two remedies, cheapest first, each tried at most once.
@@ -262,54 +289,42 @@ namespace AutoVPNConnect {
               return recovery;
             ret = Dial();
           }
-          if (ret != 0)
+          if (ret != 0) {
+            HangUpStaleHandle(); // a failed dial must not be left holding the port
             return GetRasError(ret);
-          hRasConn = conn;
+          }
           return null;
         }
         else {
           ProcessStartInfo procStartInfo;
-          // rasphone only launches the connection dialog and returns, so its exit code is not
-          // a RAS error and must not be mistaken for one.
-          bool exitCodeIsRasError;
           if (!string.IsNullOrEmpty(userName) && !string.IsNullOrEmpty(password)) {
             var rasdialCommand = " " + '\u0022' + vpnName + '\u0022';
             rasdialCommand += " " + userName;
             rasdialCommand += " " + password;
             procStartInfo = new ProcessStartInfo("rasdial.exe", rasdialCommand);
-            exitCodeIsRasError = true;
           }
           else {
             var rasphoneCommand = " -d " + '\u0022' + vpnName + '\u0022';
             procStartInfo = new ProcessStartInfo("rasphone", rasphoneCommand);
-            exitCodeIsRasError = false;
           }
 
           procStartInfo.RedirectStandardOutput = true;
           procStartInfo.UseShellExecute = false;
           procStartInfo.CreateNoWindow = true;
           procStartInfo.WindowStyle = ProcessWindowStyle.Hidden;
-          bool IsStuckPort(int code) => exitCodeIsRasError && code == (int)RasManService.ErrorPortAlreadyOpen;
-
+          // This branch is only reached without usable stored credentials, which means the
+          // rasdial arm above it is unreachable and rasphone always wins. rasphone merely
+          // launches the connection dialog and returns, so its exit code is not a RAS error
+          // and the 633 recovery has no meaning here - it lives in the RasDial branch.
           var exitCode = RunDialProcess(procStartInfo);
-          if (IsStuckPort(exitCode) && ReleaseStaleHandle())
-            exitCode = RunDialProcess(procStartInfo);
-          if (IsStuckPort(exitCode)) {
-            var recovery = ClearStuckPort();
-            if (recovery != null)
-              return recovery;
-            exitCode = RunDialProcess(procStartInfo);
-          }
-          if (exitCode == 0)
-            return null;
-          return exitCodeIsRasError ? GetRasError((uint)exitCode) : $"Error {exitCode}";
+          return exitCode == 0 ? null : $"Error {exitCode}";
         }
       }
       catch (Exception ex) {
         return ex.Message;
       }
       finally {
-        IsBusy = false;
+        EndBusy();
       }
     }
 

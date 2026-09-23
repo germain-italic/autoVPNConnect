@@ -26,6 +26,9 @@ namespace AutoVPNConnect {
     private const string TaskName = "AutoVPNConnect\\RestartRasMan";
     private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(45);
+    // Matches the task's own ExecutionTimeLimit: giving up sooner would report a failure for
+    // a restart that is still running and about to succeed.
+    private static readonly TimeSpan StampTimeout = TimeSpan.FromMinutes(2);
 
     /// <summary>
     /// The task writes this stamp after a successful restart. schtasks /Run only reports that
@@ -105,7 +108,12 @@ namespace AutoVPNConnect {
     /// Restarts RasMan and waits for it to come back up, so that a dial retried afterwards
     /// sees a clean set of ports. Returns false with a message when the restart did not run.
     /// </summary>
-    public static bool TryRestart(out string error) {
+    /// <param name="allowRegistration">
+    /// Whether a missing helper task may be registered here. Callers running in the background
+    /// must pass false: RegisterTask raises a UAC prompt with no window to own it, which the
+    /// user would never see while the application sits in the tray.
+    /// </param>
+    public static bool TryRestart(bool allowRegistration, out string error) {
       error = null;
       try {
         if (IsElevated) {
@@ -113,8 +121,15 @@ namespace AutoVPNConnect {
           return true;
         }
 
-        if (!IsTaskRegistered() && !RegisterTask(out error))
-          return false;
+        if (!IsTaskRegistered()) {
+          if (!allowRegistration) {
+            error = "The helper that restarts the RasMan service is not set up yet. " +
+              "Open the main window and tick 'Fix stuck VPN port' to allow it.";
+            return false;
+          }
+          if (!RegisterTask(out error))
+            return false;
+        }
 
         var triggeredAt = DateTime.UtcNow;
         if (!RunSchTasks("/Run /TN \"" + TaskName + "\"", false, out var output)) {
@@ -152,20 +167,25 @@ namespace AutoVPNConnect {
           dependent.WaitForStatus(ServiceControllerStatus.Stopped, StopTimeout);
         }
 
-        if (service.Status != ServiceControllerStatus.Stopped) {
-          service.Stop();
-          service.WaitForStatus(ServiceControllerStatus.Stopped, StopTimeout);
-        }
-        service.Start();
-        service.WaitForStatus(ServiceControllerStatus.Running, StartTimeout);
-
-        foreach (var dependent in dependents) {
-          try {
-            dependent.Start();
-            dependent.WaitForStatus(ServiceControllerStatus.Running, StopTimeout);
+        try {
+          if (service.Status != ServiceControllerStatus.Stopped) {
+            service.Stop();
+            service.WaitForStatus(ServiceControllerStatus.Stopped, StopTimeout);
           }
-          catch {
-            // best effort: a dependent that refuses to come back must not fail the recovery
+          service.Start();
+          service.WaitForStatus(ServiceControllerStatus.Running, StartTimeout);
+        }
+        finally {
+          // Whatever happened to RasMan, services we stopped ourselves must not be left down
+          // until the next reboot.
+          foreach (var dependent in dependents) {
+            try {
+              dependent.Start();
+              dependent.WaitForStatus(ServiceControllerStatus.Running, StopTimeout);
+            }
+            catch {
+              // best effort: a dependent that refuses to come back must not fail the recovery
+            }
           }
         }
       }
@@ -174,7 +194,7 @@ namespace AutoVPNConnect {
 
     private static bool WaitForStamp(DateTime triggeredAt) {
       var path = StampPath;
-      var deadline = DateTime.UtcNow + StartTimeout;
+      var deadline = DateTime.UtcNow + StampTimeout;
       while (DateTime.UtcNow < deadline) {
         try {
           if (File.Exists(path) && File.GetLastWriteTimeUtc(path) >= triggeredAt)
@@ -267,9 +287,14 @@ namespace AutoVPNConnect {
       // -ErrorAction Stop keeps the stamp from being written when the restart itself fails,
       // which is what lets the caller tell a real restart from a task that merely started.
       var stamp = StampPath.Replace("'", "''");
+      // Restart-Service -Force stops dependent services so the stop can proceed, but starts
+      // only RasMan again - so they are noted first and put back afterwards, matching what
+      // the elevated in-process path does.
       var command =
         "$ErrorActionPreference = 'Stop'; " +
+        "$deps = @((Get-Service -Name RasMan).DependentServices | Where-Object { $_.Status -ne 'Stopped' }); " +
         "Restart-Service -Name RasMan -Force; " +
+        "foreach ($d in $deps) { try { Start-Service -Name $d.Name } catch { } }; " +
         "$p = '" + stamp + "'; " +
         "New-Item -ItemType Directory -Force -Path (Split-Path $p) | Out-Null; " +
         "Set-Content -Path $p -Value ([DateTime]::UtcNow.ToString('o'))";
