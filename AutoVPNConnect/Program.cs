@@ -1,5 +1,7 @@
 ﻿using sergiye.Common;
 using System;
+using System.Net;
+using System.Runtime.CompilerServices;
 // using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
@@ -15,17 +17,11 @@ namespace AutoVPNConnect {
       Crasher.Listen();
       // SetCurrentProcessExplicitAppUserModelID(Updater.ApplicationCompany + "." + Updater.ApplicationName);
 
-      if (!OSHelper.IsCompatible(true, out var errorMessage, out var fixAction, false)) {
-        if (fixAction != null) {
-          if (MessageBox.Show(errorMessage, Updater.ApplicationTitle, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes) {
-            fixAction?.Invoke();
-          }
-        }
-        else {
-          MessageBox.Show(errorMessage, Updater.ApplicationTitle, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
-        Environment.Exit(0);
-      }
+      // Updater's static constructor installs a process-wide certificate callback that accepts
+      // any certificate, and the updater downloads and runs a replacement executable. Run that
+      // constructor now, then restore normal TLS validation before any request is made.
+      RuntimeHelpers.RunClassConstructor(typeof(Updater).TypeHandle);
+      ServicePointManager.ServerCertificateValidationCallback = null;
 
       if (WinApiHelper.CheckRunningInstances(true, true)) {
         MessageBox.Show($"{Updater.ApplicationTitle} is already running.\nIt is recommended to close this instance.", Updater.ApplicationTitle, MessageBoxButtons.OK, MessageBoxIcon.Warning);
