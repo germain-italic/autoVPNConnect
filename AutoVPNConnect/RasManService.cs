@@ -30,6 +30,11 @@ namespace AutoVPNConnect {
     private const string TaskName = TaskFolder + "\\" + TaskLeafName;
     private const int TaskStateQueued = 2;
     private const int TaskStateRunning = 4;
+    // Bump whenever the task's action changes. A task already registered is never replaced on
+    // its own - schtasks /Create /F would overwrite it, but nothing asks it to - so without a
+    // stamp an installation would quietly go on running the script it was first given.
+    private const string TaskVersion = "2";
+    private const string VersionPrefix = "[task v";
     private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(45);
     // Matches the task's own ExecutionTimeLimit: giving up sooner would report a failure for
@@ -51,6 +56,46 @@ namespace AutoVPNConnect {
 
     public static bool IsTaskRegistered() {
       return RunSchTasks("/Query /TN \"" + TaskName + "\"", false, out _);
+    }
+
+    /// <summary>
+    /// True when a helper task is registered but carries an older action than this build would
+    /// install, so it should be replaced while the user is in front of the application.
+    /// A task whose stamp cannot be read at all counts as current: guessing the other way
+    /// would cost a UAC prompt every single time the window opens.
+    /// </summary>
+    public static bool IsTaskOutdated() {
+      var version = ReadTaskVersion();
+      return version != null && version != TaskVersion;
+    }
+
+    /// <returns>
+    /// The version stamped in the registered task, an empty string when it carries none
+    /// (anything registered before stamping existed), or null when the task could not be read.
+    /// </returns>
+    private static string ReadTaskVersion() {
+      try {
+        var type = Type.GetTypeFromProgID("Schedule.Service");
+        if (type == null)
+          return null;
+
+        dynamic scheduler = Activator.CreateInstance(type);
+        scheduler.Connect();
+        string description = scheduler.GetFolder("\\" + TaskFolder)
+          .GetTask(TaskLeafName).Definition.RegistrationInfo.Description;
+        if (description == null)
+          return string.Empty;
+
+        var start = description.IndexOf(VersionPrefix, StringComparison.Ordinal);
+        if (start < 0)
+          return string.Empty;
+        start += VersionPrefix.Length;
+        var end = description.IndexOf(']', start);
+        return end < 0 ? string.Empty : description.Substring(start, end - start);
+      }
+      catch {
+        return null;
+      }
     }
 
     /// <summary>
@@ -333,7 +378,7 @@ namespace AutoVPNConnect {
         "<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\r\n" +
         "  <RegistrationInfo>\r\n" +
         "    <Author>AutoVPNConnect</Author>\r\n" +
-        "    <Description>Restarts the Windows RasMan service to release a stuck VPN port (RAS error 633). Created by AutoVPNConnect.</Description>\r\n" +
+        "    <Description>Restarts the Windows RasMan service to release a stuck VPN port (RAS error 633). Created by AutoVPNConnect " + VersionPrefix + TaskVersion + "]</Description>\r\n" +
         "    <SecurityDescriptor>D:(A;;FA;;;BA)(A;;FA;;;SY)(A;;FRFX;;;" + userSid + ")</SecurityDescriptor>\r\n" +
         "  </RegistrationInfo>\r\n" +
         "  <Triggers />\r\n" +

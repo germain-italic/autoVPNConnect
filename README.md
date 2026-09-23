@@ -41,6 +41,11 @@ the Task Scheduler itself - a restart that never ran would otherwise pass for a 
 If the application already runs elevated, no task is created and the service is restarted
 directly, stopping and restoring any dependent services.
 
+The task carries the version of the script it was created with, so a later release that
+changes what the task does replaces it instead of leaving the old one in place. That costs
+one further UAC prompt, once, the first time you open the window after such an update; if you
+decline it, the existing task keeps working as before.
+
 Unticking the option offers to remove the task. It can also be removed by hand:
 
 ```

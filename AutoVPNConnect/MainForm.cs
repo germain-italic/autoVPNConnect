@@ -310,7 +310,15 @@ namespace AutoVPNConnect {
     /// </summary>
     private void TryRegisterRecoveryTask() {
       recoveryTaskChecked = true;
-      if (RasManService.IsElevated || RasManService.IsTaskRegistered())
+      if (RasManService.IsElevated)
+        return;
+
+      // An upgrade replaces the task, which costs one more UAC prompt - but only on the first
+      // window opening after the action itself changed, and it is the only moment the user is
+      // there to answer it.
+      var registered = RasManService.IsTaskRegistered();
+      var outdated = registered && RasManService.IsTaskOutdated();
+      if (registered && !outdated)
         return;
 
       if (RasManService.RegisterTask(out var error))
@@ -318,7 +326,12 @@ namespace AutoVPNConnect {
 
       // The elevated schtasks can still have succeeded after we stopped waiting on it, so
       // check before telling the user it failed and turning the feature off under them.
-      if (RasManService.IsTaskRegistered())
+      if (RasManService.IsTaskRegistered() && !RasManService.IsTaskOutdated())
+        return;
+
+      // A task from an older build still restarts the service; it just handles a restart that
+      // fails less well. Keeping it beats nagging the user and turning the feature off.
+      if (outdated)
         return;
 
       MessageBox.Show("Restarting the RasMan service could not be set up, so error 633 will " +
