@@ -357,7 +357,9 @@ namespace AutoVPNConnect {
       lblConnectionStatus.ForeColor = isConnecting ? Theme.Current.InfoColor : isConnected ? Theme.Current.MessageColor : Theme.Current.WarnColor;
       if (isConnected)
         reportedError = null; // a success re-arms the announcement for the next failure
-      ShowLastError(isConnecting ? null : mConnectionManager?.LastError);
+      // Hidden while connecting (the attempt clears it anyway) and once connected, including
+      // when the connection came up outside the application and LastError is simply stale.
+      ShowLastError(isConnected || isConnecting ? null : mConnectionManager?.LastError);
 
       Icon = mNotifyIcon.Icon = isConnecting ? yellowIcon : isConnected ? greenIcon : redIcon;
       // TaskbarProgressHelper.SetOverlay(Icon.Handle, this.Handle, "test");
