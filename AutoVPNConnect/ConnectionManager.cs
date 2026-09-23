@@ -14,7 +14,13 @@ namespace AutoVPNConnect {
   class ConnectionManager {
 
     private const string BusyResult = "Busy";
-    private const int HangUpSettleMs = 1500;
+
+    // Hanging up is asynchronous: how long we are prepared to wait for the session to be gone,
+    // how often we ask, and the blind wait Microsoft documents for when asking is not possible.
+    private const int HangUpTimeoutMs = 5000;
+    private const int HangUpPollMs = 100;
+    private const int HangUpFallbackMs = 3000;
+    private const uint ErrorInvalidHandle = 6;
 
     private const int RAS_MaxEntryName = 256;
     private const int UNLEN = 256;
@@ -22,6 +28,8 @@ namespace AutoVPNConnect {
     private const int DNLEN = 15;
     private const int RAS_MaxPhoneNumber = 128;
     private const int RAS_MaxCallbackNumber = RAS_MaxPhoneNumber;
+    private const int RAS_MaxDeviceType = 16;
+    private const int RAS_MaxDeviceName = 128;
 
     private IntPtr hRasConn = IntPtr.Zero;
     private int busyFlag;
@@ -43,11 +51,39 @@ namespace AutoVPNConnect {
       public string szDomain;
     }
 
+    // Vista and later append the tunnel endpoints and the sub-state to RASCONNSTATUS; the
+    // whole structure has to be described, because RasGetConnectStatus validates dwSize.
+    [StructLayout(LayoutKind.Sequential)]
+    struct RASTUNNELENDPOINT {
+      public uint dwType;
+      [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)]
+      public byte[] addr;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    struct RASCONNSTATUS {
+      public int dwSize;
+      public int rasconnstate;
+      public uint dwError;
+      [MarshalAs(UnmanagedType.ByValTStr, SizeConst = RAS_MaxDeviceType + 1)]
+      public string szDeviceType;
+      [MarshalAs(UnmanagedType.ByValTStr, SizeConst = RAS_MaxDeviceName + 1)]
+      public string szDeviceName;
+      [MarshalAs(UnmanagedType.ByValTStr, SizeConst = RAS_MaxPhoneNumber + 1)]
+      public string szPhoneNumber;
+      public RASTUNNELENDPOINT localEndPoint;
+      public RASTUNNELENDPOINT remoteEndPoint;
+      public int rasconnsubstate;
+    }
+
     [DllImport("rasapi32.dll", CharSet = CharSet.Auto)]
     private static extern uint RasDial(IntPtr lpRasDialExtensions, string lpszPhonebook, ref RASDIALPARAMS lpRasDialParams, int dwNotifierType, IntPtr lpvNotifier, out IntPtr lphRasConn);
 
     [DllImport("rasapi32.dll", SetLastError = true)]
     private static extern uint RasHangUp(IntPtr hRasConn);
+
+    [DllImport("rasapi32.dll", CharSet = CharSet.Auto)]
+    private static extern uint RasGetConnectStatus(IntPtr hRasConn, ref RASCONNSTATUS lpRasConnStatus);
 
     [DllImport("rasapi32.dll", CharSet = CharSet.Auto)]
     private static extern uint RasGetErrorString(uint errorCode, StringBuilder lpszErrorString, int cBufSize);
@@ -161,9 +197,39 @@ namespace AutoVPNConnect {
     private bool ReleaseStaleHandle() {
       if (hRasConn == IntPtr.Zero)
         return false;
+      var handle = hRasConn;
       HangUpStaleHandle();
-      Thread.Sleep(HangUpSettleMs); // RasHangUp returns before the port is actually free
+      WaitForHangUp(handle);
       return true;
+    }
+
+    /// <summary>
+    /// RasHangUp returns before the session is actually torn down, and dialling again too early
+    /// earns another 633 - which would then cost a RasMan restart nobody needed, taking every
+    /// other VPN on the machine down with it. Microsoft's remedy is to poll the handle until it
+    /// is invalid; the fixed wait is the documented fallback for when polling is not possible.
+    /// </summary>
+    private static void WaitForHangUp(IntPtr handle) {
+      var elapsed = Stopwatch.StartNew();
+      while (elapsed.ElapsedMilliseconds < HangUpTimeoutMs) {
+        uint ret;
+        try {
+          var status = new RASCONNSTATUS { dwSize = Marshal.SizeOf(typeof(RASCONNSTATUS)) };
+          ret = RasGetConnectStatus(handle, ref status);
+        }
+        catch {
+          ret = uint.MaxValue;
+        }
+        if (ret == ErrorInvalidHandle)
+          return; // the session is gone, which is all we were waiting for
+        if (ret != 0) {
+          // The status call itself is unusable (a structure this build of Windows does not
+          // recognise, say). Stop asking and fall back to waiting blind.
+          Thread.Sleep(HangUpFallbackMs);
+          return;
+        }
+        Thread.Sleep(HangUpPollMs);
+      }
     }
 
     /// <summary>Same, without the settle delay, for when no retry follows.</summary>
@@ -292,8 +358,12 @@ namespace AutoVPNConnect {
             ret = Dial();
           if (ret == RasManService.ErrorPortAlreadyOpen) {
             var recovery = ClearStuckPort();
-            if (recovery != null)
+            if (recovery != null) {
+              // The second dial may have handed back a handle of its own, and giving up here
+              // must not leave it holding the port for the next attempt to trip over.
+              HangUpStaleHandle();
               return recovery;
+            }
             ret = Dial();
           }
           if (ret != 0) {

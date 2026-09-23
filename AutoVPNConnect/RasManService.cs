@@ -318,12 +318,15 @@ namespace AutoVPNConnect {
       // caller reads back as the task's LastTaskResult.
       // Restart-Service -Force stops dependent services so the stop can proceed, but starts
       // only RasMan again - so they are noted first and put back afterwards, matching what
-      // the elevated in-process path does.
+      // the elevated in-process path does. The restoration sits in a finally for the same
+      // reason it does in C#: a restart that fails halfway has already stopped them, and
+      // leaving it out of the failure path would strand them until the next reboot. The
+      // error still propagates once the finally has run, so the exit code is unaffected.
       var command =
         "$ErrorActionPreference = 'Stop'; " +
         "$deps = @((Get-Service -Name RasMan).DependentServices | Where-Object { $_.Status -ne 'Stopped' }); " +
-        "Restart-Service -Name RasMan -Force; " +
-        "foreach ($d in $deps) { try { Start-Service -Name $d.Name } catch { } }";
+        "try { Restart-Service -Name RasMan -Force } " +
+        "finally { foreach ($d in $deps) { try { Start-Service -Name $d.Name } catch { } } }";
 
       return
         "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n" +
