@@ -546,7 +546,7 @@ namespace AutoVPNConnect {
       }
       mSettingsManager.HealthCheckHost = host;
       btnHealthTest.Enabled = false;
-      ShowHealthResult($"Pinging {host}...", Theme.Current.InfoColor);
+      ShowHealthResult("Pinging...", Theme.Current.InfoColor);
       var result = await Task.Run(() => ConnectionManager.PingHost(host));
       var vpnUp = await Task.Run(() => mConnectionManager.VpnIsConnected());
       btnHealthTest.Enabled = true;
@@ -554,13 +554,13 @@ namespace AutoVPNConnect {
       // A host that answers with the VPN down proves nothing about the tunnel: say so, since
       // that is the one mistake that makes the check useless.
       if (result.Success && !vpnUp)
-        ShowHealthResult($"{host} answers without the VPN: pick a host reachable only through it.", Theme.Current.WarnColor);
+        ShowHealthResult("Answers even without the VPN: pick a host reachable only through it.", Theme.Current.WarnColor);
       else if (result.Success)
-        ShowHealthResult($"{host} answers through the VPN ({result.RoundtripMs} ms).", Theme.Current.MessageColor);
+        ShowHealthResult($"Answers through the VPN ({result.RoundtripMs} ms).", Theme.Current.MessageColor);
       else if (!vpnUp)
-        ShowHealthResult($"{host}: {result.Error}. Connect the VPN and test again.", Theme.Current.WarnColor);
+        ShowHealthResult($"No answer ({result.Error}). Connect the VPN and test again.", Theme.Current.WarnColor);
       else
-        ShowHealthResult($"{host}: {result.Error}.", Theme.Current.WarnColor);
+        ShowHealthResult($"No answer ({result.Error}).", Theme.Current.WarnColor);
     }
 
     private void ShowHealthResult(string text, Color color) {

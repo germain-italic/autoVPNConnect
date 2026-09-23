@@ -136,17 +136,17 @@
       // lblHealthResult
       //
       this.lblHealthResult.AutoEllipsis = true;
-      this.lblHealthResult.Location = new System.Drawing.Point(88, 292);
+      this.lblHealthResult.Location = new System.Drawing.Point(11, 292);
       this.lblHealthResult.Margin = new System.Windows.Forms.Padding(2, 0, 2, 0);
       this.lblHealthResult.Name = "lblHealthResult";
-      this.lblHealthResult.Size = new System.Drawing.Size(209, 13);
+      this.lblHealthResult.Size = new System.Drawing.Size(286, 26);
       this.lblHealthResult.TabIndex = 18;
       this.lblHealthResult.Text = "";
       //
       // lblLastError
       //
       this.lblLastError.AutoEllipsis = true;
-      this.lblLastError.Location = new System.Drawing.Point(11, 311);
+      this.lblLastError.Location = new System.Drawing.Point(11, 322);
       this.lblLastError.Margin = new System.Windows.Forms.Padding(2, 0, 2, 0);
       this.lblLastError.Name = "lblLastError";
       this.lblLastError.Size = new System.Drawing.Size(286, 30);
@@ -261,7 +261,7 @@
       // 
       this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
       this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-      this.ClientSize = new System.Drawing.Size(308, 347);
+      this.ClientSize = new System.Drawing.Size(308, 358);
       this.Controls.Add(this.lblHealthResult);
       this.Controls.Add(this.btnHealthTest);
       this.Controls.Add(this.txtHealthHost);
