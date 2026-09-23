@@ -101,6 +101,11 @@ namespace AutoVPNConnect {
     public event Action OnStatusChanged;
 
     private void NetworkAddressChanged(object sender, EventArgs e) {
+      // A connection made outside the app (network flyout, rasphone) ends a manual
+      // disconnect; otherwise that connection's next drop would never be restored. Not while
+      // busy: the hang-up itself raises address changes while the tunnel is still up.
+      if (manuallyDisconnected && !IsBusy && VpnIsConnected())
+        manuallyDisconnected = false;
       if (mSettingsManager.Reconnect) {
         // Windows delivers this on a shared notification thread; a reconnect can now take a
         // service restart's worth of time, so it must not run inline.
@@ -155,9 +160,29 @@ namespace AutoVPNConnect {
         : active.Any(ni => ni.Name == vpnConnectionName);
     }
 
+    /// <summary>
+    /// Set when the user disconnects on purpose. Hanging up changes the network addresses,
+    /// which fires NetworkAddressChanged, and with Reconnect ticked that dialled straight
+    /// back: a manual disconnect was impossible. Automatic restores stay off until the VPN is
+    /// connected again, from the app or elsewhere. Kept in memory only, so a restart of the
+    /// app resumes them.
+    /// </summary>
+    private volatile bool manuallyDisconnected;
+
     public void ToggleConnection() {
       Task.Run(() => {
-        SetLastError(VpnIsConnected() ? DisconnectFromVpn() : ConnectToVpn());
+        if (VpnIsConnected()) {
+          // Raised before hanging up: the address change arrives while the hang-up runs.
+          manuallyDisconnected = true;
+          var error = DisconnectFromVpn();
+          if (error != null)
+            manuallyDisconnected = false; // still connected, keep guarding against drops
+          SetLastError(error);
+        }
+        else {
+          manuallyDisconnected = false;
+          SetLastError(ConnectToVpn());
+        }
       });
     }
 
@@ -300,7 +325,7 @@ namespace AutoVPNConnect {
         }
 
         var vpnName = mSettingsManager.VpnConnectionName;
-        var exitCode = RunDialProcess(new ProcessStartInfo("rasdial.exe", $" \u0022{vpnName}\u0022 /disconnect") {
+        var exitCode = RunDialProcess(new ProcessStartInfo("rasdial.exe", $" \"{vpnName}\" /disconnect") {
           RedirectStandardOutput = true,
           UseShellExecute = false,
           CreateNoWindow = true,
@@ -375,13 +400,13 @@ namespace AutoVPNConnect {
         else {
           ProcessStartInfo procStartInfo;
           if (!string.IsNullOrEmpty(userName) && !string.IsNullOrEmpty(password)) {
-            var rasdialCommand = " " + '\u0022' + vpnName + '\u0022';
+            var rasdialCommand = " " + '\"' + vpnName + '\"';
             rasdialCommand += " " + userName;
             rasdialCommand += " " + password;
             procStartInfo = new ProcessStartInfo("rasdial.exe", rasdialCommand);
           }
           else {
-            var rasphoneCommand = " -d " + '\u0022' + vpnName + '\u0022';
+            var rasphoneCommand = " -d " + '\"' + vpnName + '\"';
             procStartInfo = new ProcessStartInfo("rasphone", rasphoneCommand);
           }
 
@@ -406,6 +431,8 @@ namespace AutoVPNConnect {
     }
 
     public void RestoreConnection() {
+      if (manuallyDisconnected)
+        return;
       if (!VpnIsConnected() && mSettingsManager.IsConnectionConfigured) {
         SetLastError(ConnectToVpn());
       }

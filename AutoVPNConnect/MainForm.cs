@@ -88,14 +88,52 @@ namespace AutoVPNConnect {
 
     // Replaces Updater.ShowAbout, whose text is hardcoded in the library and names the
     // original author only. The original copyright stays: this is a fork of his work.
+    // A form rather than a MessageBox, which cannot show a clickable link.
     private static void ShowAbout() {
+      const string forkUrl = "https://github.com/germain-italic/autoVPNConnect";
       var assembly = Assembly.GetExecutingAssembly();
       var copyright = assembly.GetCustomAttribute<AssemblyCopyrightAttribute>()?.Copyright;
-      MessageBox.Show(
-        $"{Updater.ApplicationTitle} {assembly.GetName().Version} {(Environment.Is64BitProcess ? "x64" : "x86")}\n\n" +
-        "Fork maintained by germain-italic\nhttps://github.com/germain-italic/autoVPNConnect\n\n" +
-        "Based on AutoVPNConnect by Sergiy Egoshyn.\n" + copyright,
-        Updater.ApplicationTitle, MessageBoxButtons.OK, MessageBoxIcon.Information);
+      using (var form = new Form {
+        Text = "About " + Updater.ApplicationTitle,
+        FormBorderStyle = FormBorderStyle.FixedDialog,
+        MaximizeBox = false,
+        MinimizeBox = false,
+        ShowInTaskbar = false,
+        TopMost = true,
+        StartPosition = FormStartPosition.CenterScreen,
+        AutoSize = true,
+        AutoSizeMode = AutoSizeMode.GrowAndShrink,
+        Padding = new Padding(12),
+      }) {
+        var layout = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true };
+        layout.Controls.Add(new Label {
+          AutoSize = true,
+          Font = new Font(form.Font, FontStyle.Bold),
+          Text = $"{Updater.ApplicationTitle} {assembly.GetName().Version} {(Environment.Is64BitProcess ? "x64" : "x86")}",
+        });
+        layout.Controls.Add(new Label { AutoSize = true, Margin = new Padding(3, 12, 3, 0), Text = "Fork maintained by germain-italic" });
+        var link = new LinkLabel { AutoSize = true, Text = forkUrl };
+        link.LinkClicked += (_, _) => {
+          try {
+            Process.Start(new ProcessStartInfo(forkUrl) { UseShellExecute = true });
+          }
+          catch (Exception ex) { // no default browser: say so instead of crashing the dialog
+            MessageBox.Show(form, $"Cannot open {forkUrl}:{Environment.NewLine}{ex.Message}", form.Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+          }
+        };
+        layout.Controls.Add(link);
+        layout.Controls.Add(new Label {
+          AutoSize = true,
+          Margin = new Padding(3, 12, 3, 0),
+          Text = "Based on AutoVPNConnect by Sergiy Egoshyn." + Environment.NewLine + copyright,
+        });
+        var ok = new Button { Text = "OK", DialogResult = DialogResult.OK, Anchor = AnchorStyles.Right, Margin = new Padding(3, 12, 3, 0) };
+        layout.Controls.Add(ok);
+        form.AcceptButton = form.CancelButton = ok;
+        form.Controls.Add(layout);
+        Theme.Current.Apply(form);
+        form.ShowDialog();
+      }
     }
 
     private static bool DoSnap(int pos, int edge) {
@@ -148,7 +186,7 @@ namespace AutoVPNConnect {
       }
 
       menuItemAutoStart = new ToolStripMenuItem(cbxAutoStart.Text, null, (_, _) => { cbxAutoStart.Checked = !cbxAutoStart.Checked; });
-      menuItemReconnect = new ToolStripMenuItem("Restore connection", null, menuReconnect_Click);
+      menuItemReconnect = new ToolStripMenuItem("Restore lost connection", null, menuReconnect_Click);
       menuItemConnect = new ToolStripMenuItem("Connect", null, btnToggle_Click);
       btnToggle.Click += btnToggle_Click;
       mNotifyIcon = new NotifyIconAdv {
@@ -177,6 +215,11 @@ namespace AutoVPNConnect {
       cbxReconnect.Checked = mSettingsManager.Reconnect;
       cbxFixStuckPort.Checked = mSettingsManager.FixStuckPort;
       loadingSettings = false;
+      // Connect at startup when restoring is on. This used to happen as a side effect of
+      // setting the checkbox above, which also made ticking it by hand dial immediately.
+      if (mSettingsManager.Reconnect) {
+        Task.Run(() => mConnectionManager.RestoreConnection());
+      }
 
       var runInBackground = new UserOption("StartApplicationMinimized", false, cbxRunInBackground, settings);
       runInBackground.Changed += (_, _) => {
@@ -363,11 +406,7 @@ namespace AutoVPNConnect {
     private void cbxReconnect_CheckedChanged(object sender, EventArgs e) {
       mSettingsManager.Reconnect = cbxReconnect.Checked;
       menuItemReconnect.Checked = cbxReconnect.Checked;
-      if (cbxReconnect.Checked) {
-        Task.Run(() => {
-          mConnectionManager?.RestoreConnection();
-        });
-      }
+      // A setting, not an action: it permits restoring a lost connection, it does not dial.
     }
 
     private void UpdateUI() {
@@ -381,7 +420,8 @@ namespace AutoVPNConnect {
       var isConnecting = mConnectionManager?.IsBusy ?? false;
       var isConnected = mConnectionManager?.VpnIsConnected() ?? false;
       var isConnectedText = isConnecting ? "Busy" : isConnected ? "Connected" : "Disconnected";
-      btnToggle.Text = menuItemConnect.Text = isConnected ? "Disconnect" : "Connect";
+      btnToggle.Text = isConnected ? "Disconnect" : "Connect";
+      menuItemConnect.Text = isConnected ? "Force disconnect" : "Connect";
       btnToggle.Enabled = menuItemConnect.Enabled = !connectionName.IsNullOrEmpty() && !isConnecting;
 
       lblConnectionStatus.Text = "Connection status: " + isConnectedText;

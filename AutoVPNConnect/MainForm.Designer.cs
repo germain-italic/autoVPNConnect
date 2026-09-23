@@ -91,7 +91,7 @@
       this.cbxReconnect.Name = "cbxReconnect";
       this.cbxReconnect.Size = new System.Drawing.Size(119, 17);
       this.cbxReconnect.TabIndex = 10;
-      this.cbxReconnect.Text = "Restore connection";
+      this.cbxReconnect.Text = "Restore lost connection";
       this.cbxReconnect.UseVisualStyleBackColor = true;
       this.cbxReconnect.CheckedChanged += new System.EventHandler(this.cbxReconnect_CheckedChanged);
       // 
