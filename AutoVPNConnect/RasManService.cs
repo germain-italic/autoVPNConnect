@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Security.Principal;
 using System.ServiceProcess;
 using System.Text;
@@ -25,6 +26,21 @@ namespace AutoVPNConnect {
     private const string TaskName = "AutoVPNConnect\\RestartRasMan";
     private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(45);
+
+    /// <summary>
+    /// The task writes this stamp after a successful restart. schtasks /Run only reports that
+    /// the task was queued, so the stamp is the only trustworthy evidence that the restart
+    /// actually ran - without it a task that fails to start looks like a success and the dial
+    /// is retried for nothing. It lives under ProgramData so that the task (running as SYSTEM)
+    /// can write it while the application (running as the user) can still read it.
+    /// </summary>
+    private static string StampPath {
+      get {
+        var dir = Path.Combine(
+          Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "AutoVPNConnect");
+        return Path.Combine(dir, "rasman-restart.stamp");
+      }
+    }
 
     public static bool IsElevated {
       get {
@@ -87,7 +103,7 @@ namespace AutoVPNConnect {
 
     /// <summary>
     /// Restarts RasMan and waits for it to come back up, so that a dial retried afterwards
-    /// sees a clean set of ports. Returns false with a message when the restart could not run.
+    /// sees a clean set of ports. Returns false with a message when the restart did not run.
     /// </summary>
     public static bool TryRestart(out string error) {
       error = null;
@@ -100,12 +116,18 @@ namespace AutoVPNConnect {
         if (!IsTaskRegistered() && !RegisterTask(out error))
           return false;
 
+        var triggeredAt = DateTime.UtcNow;
         if (!RunSchTasks("/Run /TN \"" + TaskName + "\"", false, out var output)) {
           error = string.IsNullOrEmpty(output) ? "Could not start the RasMan recovery task." : output;
           return false;
         }
 
-        WaitForServiceRestart();
+        if (!WaitForStamp(triggeredAt)) {
+          error = "The RasMan recovery task did not report a successful restart.";
+          return false;
+        }
+
+        SettleAfterRestart();
         return true;
       }
       catch (Exception ex) {
@@ -114,34 +136,56 @@ namespace AutoVPNConnect {
       }
     }
 
+    /// <summary>
+    /// ServiceController.Stop on net472 has no stopDependentServices overload and throws when
+    /// a dependent service is running, so dependents are stopped first and put back after.
+    /// </summary>
     private static void RestartDirectly() {
       using (var service = new ServiceController(ServiceName)) {
+
+        var dependents = service.DependentServices
+          .Where(d => d.Status != ServiceControllerStatus.Stopped)
+          .ToArray();
+
+        foreach (var dependent in dependents) {
+          dependent.Stop();
+          dependent.WaitForStatus(ServiceControllerStatus.Stopped, StopTimeout);
+        }
+
         if (service.Status != ServiceControllerStatus.Stopped) {
           service.Stop();
           service.WaitForStatus(ServiceControllerStatus.Stopped, StopTimeout);
         }
         service.Start();
         service.WaitForStatus(ServiceControllerStatus.Running, StartTimeout);
+
+        foreach (var dependent in dependents) {
+          try {
+            dependent.Start();
+            dependent.WaitForStatus(ServiceControllerStatus.Running, StopTimeout);
+          }
+          catch {
+            // best effort: a dependent that refuses to come back must not fail the recovery
+          }
+        }
       }
       SettleAfterRestart();
     }
 
-    /// <summary>
-    /// The task runs asynchronously, so watch the service rather than the task. Missing the
-    /// brief stop is not an error - the restart can simply be faster than we poll.
-    /// </summary>
-    private static void WaitForServiceRestart() {
-      using (var service = new ServiceController(ServiceName)) {
-        var deadline = DateTime.UtcNow + StopTimeout;
-        while (DateTime.UtcNow < deadline) {
-          service.Refresh();
-          if (service.Status != ServiceControllerStatus.Running)
-            break;
-          Thread.Sleep(250);
+    private static bool WaitForStamp(DateTime triggeredAt) {
+      var path = StampPath;
+      var deadline = DateTime.UtcNow + StartTimeout;
+      while (DateTime.UtcNow < deadline) {
+        try {
+          if (File.Exists(path) && File.GetLastWriteTimeUtc(path) >= triggeredAt)
+            return true;
         }
-        service.WaitForStatus(ServiceControllerStatus.Running, StartTimeout);
+        catch {
+          //ignore, the task may be writing it right now
+        }
+        Thread.Sleep(500);
       }
-      SettleAfterRestart();
+      return false;
     }
 
     /// <summary>RasMan reports Running before its ports are usable again.</summary>
@@ -170,17 +214,26 @@ namespace AutoVPNConnect {
         using (var process = Process.Start(startInfo)) {
           if (process == null)
             return false;
-          if (!elevated)
-            output = (process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd()).Trim();
+
+          // Both pipes have to be drained concurrently: reading one to the end while the other
+          // fills its buffer would deadlock until the timeout below.
+          var stdout = elevated ? null : process.StandardOutput.ReadToEndAsync();
+          var stderr = elevated ? null : process.StandardError.ReadToEndAsync();
+
           if (!process.WaitForExit(60000)) {
             try {
               process.Kill();
+              process.WaitForExit(5000);
             }
             catch {
               //ignore
             }
+            output = "schtasks did not finish in time.";
             return false;
           }
+
+          if (!elevated)
+            output = (stdout.Result + stderr.Result).Trim();
           return process.ExitCode == 0;
         }
       }
@@ -210,6 +263,16 @@ namespace AutoVPNConnect {
       catch {
         //ignore
       }
+
+      // -ErrorAction Stop keeps the stamp from being written when the restart itself fails,
+      // which is what lets the caller tell a real restart from a task that merely started.
+      var stamp = StampPath.Replace("'", "''");
+      var command =
+        "$ErrorActionPreference = 'Stop'; " +
+        "Restart-Service -Name RasMan -Force; " +
+        "$p = '" + stamp + "'; " +
+        "New-Item -ItemType Directory -Force -Path (Split-Path $p) | Out-Null; " +
+        "Set-Content -Path $p -Value ([DateTime]::UtcNow.ToString('o'))";
 
       return
         "<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n" +
@@ -248,7 +311,7 @@ namespace AutoVPNConnect {
         "  <Actions Context=\"Author\">\r\n" +
         "    <Exec>\r\n" +
         "      <Command>powershell.exe</Command>\r\n" +
-        "      <Arguments>-NoProfile -NonInteractive -WindowStyle Hidden -Command \"Restart-Service -Name RasMan -Force\"</Arguments>\r\n" +
+        "      <Arguments>-NoProfile -NonInteractive -WindowStyle Hidden -Command \"" + command + "\"</Arguments>\r\n" +
         "    </Exec>\r\n" +
         "  </Actions>\r\n" +
         "</Task>\r\n";

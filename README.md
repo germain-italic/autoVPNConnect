@@ -26,14 +26,23 @@ Every later dial then fails with `Error 633: The port is already open`, and no a
 retrying helps - the RasMan service has to be restarted before the port is released. Left
 alone, this silently defeats auto reconnect until someone notices and fixes it by hand.
 
-With **Fix stuck VPN port** enabled (the default), a dial that fails with 633 restarts
-RasMan and retries once. Restarting a service needs administrator rights, so the first time
-you enable the option the application registers a scheduled task, `AutoVPNConnect\RestartRasMan`,
-that performs the restart. That is the only UAC prompt: the task is triggered silently
-afterwards, which is what keeps unattended reconnects working while the app sits in the tray.
-If the application already runs elevated, no task is created and the service is restarted directly.
+With **Fix stuck VPN port** enabled (the default), a dial that fails with 633 first hangs up
+the session left over from the dropped connection and retries; if the port is still held, it
+restarts RasMan and retries once more.
 
-To undo it, untick the option and delete the task:
+Restarting a service needs administrator rights, so the application registers a scheduled
+task, `AutoVPNConnect\RestartRasMan`, that performs the restart. It is registered the first
+time you open the main window (or when you tick the option), never in the background while a
+reconnect is failing - that is the only UAC prompt, and the task is triggered silently
+afterwards, which is what keeps unattended reconnects working while the app sits in the tray.
+The task writes `%ProgramData%\AutoVPNConnect\rasman-restart.stamp` on success, because
+`schtasks /Run` only reports that the task was queued and a restart that never ran would
+otherwise look like a successful one.
+
+If the application already runs elevated, no task is created and the service is restarted
+directly, stopping and restoring any dependent services.
+
+Unticking the option offers to remove the task. It can also be removed by hand:
 
 ```
 schtasks /Delete /TN "AutoVPNConnect\RestartRasMan" /F

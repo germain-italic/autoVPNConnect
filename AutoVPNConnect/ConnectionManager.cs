@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Linq;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace AutoVPNConnect {
@@ -12,6 +14,7 @@ namespace AutoVPNConnect {
   class ConnectionManager {
 
     private const string BusyResult = "Busy";
+    private const int HangUpSettleMs = 1500;
 
     private const int RAS_MaxEntryName = 256;
     private const int UNLEN = 256;
@@ -63,7 +66,9 @@ namespace AutoVPNConnect {
 
     private void NetworkAddressChanged(object sender, EventArgs e) {
       if (mSettingsManager.Reconnect) {
-        RestoreConnection();
+        // Windows delivers this on a shared notification thread; a reconnect can now take a
+        // service restart's worth of time, so it must not run inline.
+        Task.Run(() => RestoreConnection());
       }
       OnStatusChanged?.Invoke();
     }
@@ -119,14 +124,38 @@ namespace AutoVPNConnect {
 
     private string GetRasError(uint errorCode) {
       var sb = new StringBuilder(512);
-      RasGetErrorString(errorCode, sb, sb.Capacity);
-      return $"Error {errorCode}: {sb}";
+      // RasGetErrorString only knows RAS codes, and leaves the buffer untouched for anything
+      // else - which matters now that raw process exit codes are reported through here.
+      if (RasGetErrorString(errorCode, sb, sb.Capacity) == 0 && sb.Length > 0)
+        return $"Error {errorCode}: {sb}";
+      try {
+        return $"Error {errorCode}: {new Win32Exception((int)errorCode).Message}";
+      }
+      catch {
+        return $"Error {errorCode}";
+      }
     }
 
     /// <summary>
-    /// Handles RAS error 633 (ERROR_PORT_ALREADY_OPEN): Windows still believes the WAN
-    /// Miniport port is in use, and only a RasMan restart releases it. Returns null when the
-    /// caller should retry the dial, or a message explaining why recovery was not possible.
+    /// Hangs up the session left over from a dropped connection. That session is the cheapest
+    /// explanation for a port Windows still believes is open, and releasing it avoids both a
+    /// leaked handle and a service restart that would drop every other VPN on the machine.
+    /// Returns true when something was actually released and the dial is worth retrying.
+    /// </summary>
+    private bool ReleaseStaleHandle() {
+      if (hRasConn == IntPtr.Zero)
+        return false;
+      RasHangUp(hRasConn);
+      hRasConn = IntPtr.Zero;
+      Thread.Sleep(HangUpSettleMs); // RasHangUp returns before the port is actually free
+      return true;
+    }
+
+    /// <summary>
+    /// Handles RAS error 633 (ERROR_PORT_ALREADY_OPEN) once hanging up was not enough:
+    /// Windows still believes the WAN Miniport port is in use, and only a RasMan restart
+    /// releases it. Returns null when the caller should retry the dial, or a message
+    /// explaining why recovery was not possible.
     /// </summary>
     private string ClearStuckPort() {
       var portError = GetRasError(RasManService.ErrorPortAlreadyOpen);
@@ -134,19 +163,29 @@ namespace AutoVPNConnect {
       if (!mSettingsManager.FixStuckPort)
         return portError + " Enable 'Fix stuck VPN port' in the settings to restart the RasMan service automatically.";
 
-      // The handle left over from the dropped session points at the port we are about to free.
-      hRasConn = IntPtr.Zero;
-
       return RasManService.TryRestart(out var restartError)
         ? null
         : portError + " Restarting the RasMan service failed: " + restartError;
     }
 
     private static int RunDialProcess(ProcessStartInfo startInfo) {
-      var process = Process.Start(startInfo);
-      if (!process.WaitForExit(60000))
-        process.Kill();
-      return process.ExitCode;
+      using (var process = Process.Start(startInfo)) {
+        // Drain the redirected pipe, otherwise a chatty rasdial can fill it and block until
+        // the timeout this is guarding against.
+        var stdout = startInfo.RedirectStandardOutput ? process.StandardOutput.ReadToEndAsync() : null;
+        if (!process.WaitForExit(60000)) {
+          try {
+            process.Kill();
+            process.WaitForExit(5000);
+          }
+          catch {
+            //ignore
+          }
+          throw new TimeoutException("The dial command did not finish within 60 seconds.");
+        }
+        stdout?.Wait(1000);
+        return process.ExitCode;
+      }
     }
 
     private string DisconnectFromVpn() {
@@ -186,6 +225,9 @@ namespace AutoVPNConnect {
     private string ConnectToVpn() {
       if (IsBusy) return BusyResult;
       try {
+        // Clear it up front: IsBusy fires UpdateUI before this method returns, and a stale
+        // error showing during a fresh attempt is worse than no error at all.
+        LastError = null;
         IsBusy = true;
         var vpnName = mSettingsManager.VpnConnectionName;
         var userName = mSettingsManager.UserName;
@@ -207,12 +249,18 @@ namespace AutoVPNConnect {
         if (hasPassword && !string.IsNullOrEmpty(dialParams.szUserName)) {
           mSettingsManager.UserName = dialParams.szUserName;
           mSettingsManager.Password = dialParams.szPassword;
-          var ret = RasDial(IntPtr.Zero, null, ref dialParams, 0, IntPtr.Zero, out IntPtr conn);
+          var conn = IntPtr.Zero;
+          uint Dial() => RasDial(IntPtr.Zero, null, ref dialParams, 0, IntPtr.Zero, out conn);
+
+          var ret = Dial();
+          // Two remedies, cheapest first, each tried at most once.
+          if (ret == RasManService.ErrorPortAlreadyOpen && ReleaseStaleHandle())
+            ret = Dial();
           if (ret == RasManService.ErrorPortAlreadyOpen) {
             var recovery = ClearStuckPort();
             if (recovery != null)
               return recovery;
-            ret = RasDial(IntPtr.Zero, null, ref dialParams, 0, IntPtr.Zero, out conn);
+            ret = Dial();
           }
           if (ret != 0)
             return GetRasError(ret);
@@ -221,29 +269,40 @@ namespace AutoVPNConnect {
         }
         else {
           ProcessStartInfo procStartInfo;
+          // rasphone only launches the connection dialog and returns, so its exit code is not
+          // a RAS error and must not be mistaken for one.
+          bool exitCodeIsRasError;
           if (!string.IsNullOrEmpty(userName) && !string.IsNullOrEmpty(password)) {
             var rasdialCommand = " " + '\u0022' + vpnName + '\u0022';
             rasdialCommand += " " + userName;
             rasdialCommand += " " + password;
             procStartInfo = new ProcessStartInfo("rasdial.exe", rasdialCommand);
+            exitCodeIsRasError = true;
           }
           else {
             var rasphoneCommand = " -d " + '\u0022' + vpnName + '\u0022';
             procStartInfo = new ProcessStartInfo("rasphone", rasphoneCommand);
+            exitCodeIsRasError = false;
           }
 
           procStartInfo.RedirectStandardOutput = true;
           procStartInfo.UseShellExecute = false;
           procStartInfo.CreateNoWindow = true;
           procStartInfo.WindowStyle = ProcessWindowStyle.Hidden;
+          bool IsStuckPort(int code) => exitCodeIsRasError && code == (int)RasManService.ErrorPortAlreadyOpen;
+
           var exitCode = RunDialProcess(procStartInfo);
-          if (exitCode == (int)RasManService.ErrorPortAlreadyOpen) {
+          if (IsStuckPort(exitCode) && ReleaseStaleHandle())
+            exitCode = RunDialProcess(procStartInfo);
+          if (IsStuckPort(exitCode)) {
             var recovery = ClearStuckPort();
             if (recovery != null)
               return recovery;
             exitCode = RunDialProcess(procStartInfo);
           }
-          return exitCode == 0 ? null : GetRasError((uint)exitCode);
+          if (exitCode == 0)
+            return null;
+          return exitCodeIsRasError ? GetRasError((uint)exitCode) : $"Error {exitCode}";
         }
       }
       catch (Exception ex) {

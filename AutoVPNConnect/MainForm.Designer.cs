@@ -27,6 +27,7 @@
       this.lblConnectsTo = new System.Windows.Forms.Label();
       this.cbxRunInBackground = new System.Windows.Forms.CheckBox();
       this.cbxFixStuckPort = new System.Windows.Forms.CheckBox();
+      this.lblLastError = new System.Windows.Forms.Label();
       this.cbxReconnect = new System.Windows.Forms.CheckBox();
       this.cbxAutoStart = new System.Windows.Forms.CheckBox();
       this.btnSaveSettings = new System.Windows.Forms.Button();
@@ -71,6 +72,16 @@
       this.cbxFixStuckPort.Text = "Fix stuck VPN port";
       this.cbxFixStuckPort.UseVisualStyleBackColor = true;
       this.cbxFixStuckPort.CheckedChanged += new System.EventHandler(this.cbxFixStuckPort_CheckedChanged);
+      //
+      // lblLastError
+      //
+      this.lblLastError.AutoEllipsis = true;
+      this.lblLastError.Location = new System.Drawing.Point(11, 228);
+      this.lblLastError.Margin = new System.Windows.Forms.Padding(2, 0, 2, 0);
+      this.lblLastError.Name = "lblLastError";
+      this.lblLastError.Size = new System.Drawing.Size(286, 30);
+      this.lblLastError.TabIndex = 13;
+      this.lblLastError.Text = "";
       //
       // cbxReconnect
       //
@@ -180,7 +191,8 @@
       // 
       this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
       this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-      this.ClientSize = new System.Drawing.Size(308, 233);
+      this.ClientSize = new System.Drawing.Size(308, 264);
+      this.Controls.Add(this.lblLastError);
       this.Controls.Add(this.cbxFixStuckPort);
       this.Controls.Add(this.cbxRunInBackground);
       this.Controls.Add(this.btnSaveSettings);
@@ -220,6 +232,7 @@
     private System.Windows.Forms.Button btnSaveSettings;
     private System.Windows.Forms.CheckBox cbxRunInBackground;
     private System.Windows.Forms.CheckBox cbxFixStuckPort;
+    private System.Windows.Forms.Label lblLastError;
     private System.Windows.Forms.Button btnToggle;
   }
 }

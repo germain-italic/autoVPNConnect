@@ -24,6 +24,7 @@ namespace AutoVPNConnect {
     private readonly ToolTip statusToolTip = new ToolTip();
     private bool showApp;
     private bool loadingSettings;
+    private bool recoveryTaskChecked;
     private string reportedError;
 
     #region form decoration
@@ -272,13 +273,43 @@ namespace AutoVPNConnect {
       menuItemAutoStart.Checked = mSettingsManager.AutoStartApp = cbxAutoStart.Checked;
     }
 
+    protected override void OnShown(EventArgs e) {
+      base.OnShown(e);
+      // The setting defaults to on, so a fresh install would otherwise never register the
+      // task and the first 633 would raise UAC from a background thread. Do it the first time
+      // the user actually looks at the window - never at boot, where the app starts minimised
+      // and the prompt would go unnoticed.
+      if (!recoveryTaskChecked && mSettingsManager.FixStuckPort)
+        TryRegisterRecoveryTask();
+    }
+
     private void cbxFixStuckPort_CheckedChanged(object sender, EventArgs e) {
       mSettingsManager.FixStuckPort = cbxFixStuckPort.Checked;
-      if (loadingSettings || !cbxFixStuckPort.Checked)
+      if (loadingSettings)
         return;
 
-      // Register the elevated helper now, while the user is in front of the application,
-      // rather than springing a UAC prompt on them the moment a reconnect is failing.
+      if (cbxFixStuckPort.Checked) {
+        TryRegisterRecoveryTask();
+        return;
+      }
+
+      if (RasManService.IsElevated || !RasManService.IsTaskRegistered())
+        return;
+      if (MessageBox.Show("Also remove the scheduled task that was created to restart the RasMan service?",
+            Updater.ApplicationTitle, MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+        return;
+      if (!RasManService.RemoveTask(out var removeError))
+        MessageBox.Show("The scheduled task could not be removed.\n\n" + removeError,
+          Updater.ApplicationTitle, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+    }
+
+    /// <summary>
+    /// Registers the elevated helper while the user is in front of the application. Doing it
+    /// here rather than at the first failure is the whole point: a UAC prompt raised from the
+    /// background thread of a failing reconnect, with the window hidden, would be missed.
+    /// </summary>
+    private void TryRegisterRecoveryTask() {
+      recoveryTaskChecked = true;
       if (RasManService.IsElevated || RasManService.IsTaskRegistered())
         return;
 
@@ -289,8 +320,8 @@ namespace AutoVPNConnect {
         "have to be fixed by hand.\n\n" + error, Updater.ApplicationTitle, MessageBoxButtons.OK, MessageBoxIcon.Warning);
       loadingSettings = true;
       cbxFixStuckPort.Checked = false;
-      mSettingsManager.FixStuckPort = false;
       loadingSettings = false;
+      mSettingsManager.FixStuckPort = false;
     }
 
     private void cbxReconnect_CheckedChanged(object sender, EventArgs e) {
@@ -324,7 +355,9 @@ namespace AutoVPNConnect {
 
       lblConnectionStatus.Text = "Connection status: " + isConnectedText;
       lblConnectionStatus.ForeColor = isConnecting ? Theme.Current.InfoColor : isConnected ? Theme.Current.MessageColor : Theme.Current.WarnColor;
-      ShowLastError(isConnected || isConnecting ? null : mConnectionManager?.LastError);
+      if (isConnected)
+        reportedError = null; // a success re-arms the announcement for the next failure
+      ShowLastError(isConnecting ? null : mConnectionManager?.LastError);
 
       Icon = mNotifyIcon.Icon = isConnecting ? yellowIcon : isConnected ? greenIcon : redIcon;
       // TaskbarProgressHelper.SetOverlay(Icon.Handle, this.Handle, "test");
@@ -343,20 +376,23 @@ namespace AutoVPNConnect {
     }
 
     /// <summary>
-    /// Surfaces why a connection attempt failed. The status label only has room for a short
-    /// line, so the full message goes to the tooltip, and a balloon announces it once - the
-    /// application usually sits minimised when a reconnect fails.
+    /// Surfaces why a connection attempt failed, in its own fixed-size label so that a long
+    /// message cannot grow over the buttons. The full text goes to the tooltip, and a balloon
+    /// announces it once - the application usually sits minimised when a reconnect fails.
     /// </summary>
     private void ShowLastError(string error) {
 
       if (string.IsNullOrEmpty(error)) {
-        reportedError = null;
-        statusToolTip.SetToolTip(lblConnectionStatus, string.Empty);
+        // reportedError is deliberately left alone here: it is cleared only once a connection
+        // succeeds, so one failure repeating across a burst of network events is announced once.
+        lblLastError.Text = string.Empty;
+        statusToolTip.SetToolTip(lblLastError, string.Empty);
         return;
       }
 
-      statusToolTip.SetToolTip(lblConnectionStatus, error);
-      lblConnectionStatus.Text += Environment.NewLine + (error.Length > 52 ? error.Substring(0, 51) + "…" : error);
+      lblLastError.Text = error;
+      lblLastError.ForeColor = Theme.Current.WarnColor;
+      statusToolTip.SetToolTip(lblLastError, error);
 
       if (error == reportedError)
         return; // already announced, do not nag on every network change
