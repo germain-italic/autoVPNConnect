@@ -44,6 +44,10 @@ System tray integration with menu:
 
 [<img src="sysTray.png" alt="Preview" width="300"/>](sysTray.png)
 
+Tray notification when the VPN comes back:
+
+[<img src="notification.png" alt="Notification" width="300"/>](notification.png)
+
 ## Download
 
 Builds of this fork are published on its
