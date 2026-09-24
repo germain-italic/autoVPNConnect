@@ -34,19 +34,19 @@ independently of the original project.
 
 Main app window:
 
-[<img src="preview.png" alt="Preview" width="300"/>](preview.png)
+[<img src="preview.png" alt="Preview"/>](preview.png)
 
 Extended app system menu:
 
-[<img src="sysMenu.png" alt="Preview" width="300"/>](sysMenu.png)
+[<img src="sysMenu.png" alt="Preview"/>](sysMenu.png)
 
 System tray integration with menu:
 
-[<img src="sysTray.png" alt="Preview" width="300"/>](sysTray.png)
+[<img src="sysTray.png" alt="Preview"/>](sysTray.png)
 
 Tray notification when the VPN comes back:
 
-[<img src="notification.png" alt="Notification" width="300"/>](notification.png)
+[<img src="notification.png" alt="Notification"/>](notification.png)
 
 ## Download
 
